@@ -875,6 +875,10 @@ class ClientThread(Thread):
                          queryNS=NS_VERSION)
         self.sendToXMPP(iq)
 
+    def xmppCommandINFOGET(self, jid):
+        """Not finished """
+        pass
+
     def xmppCommandSOFTWAREVERSION(self, jid):
         """Send set software version XMPP. Not finished """
         pass
@@ -1395,7 +1399,7 @@ class ClientThread(Thread):
                 elif erc == '503':
                     self.ircCommandERRORMUC(471, 'MUC is full', room)
                 else:
-                    self.ircCommandERROR('MUC error not yet implemented')
+                    self.ircCommandERROR('MUC error not yet implemented (%d %s)' % (erc, er))
             else:
                 joining = self.joinQueue.has_key(room)
                 inroom = self.mucs.has_key(room)
