@@ -64,7 +64,7 @@ class JabberThread(Thread):
 
 class ClientThread(Thread):
     """ ClientThread class for handling IRC and Jabber connections."""
-    def __init__(self,socket, port, JabberID, passwd, debug=False):
+    def __init__(self,socket, port, JabberID, passwd, debug=False, nickname=None):
         """Constructor for ClientThread class
 
         @type socket: socket
@@ -93,7 +93,10 @@ class ClientThread(Thread):
         client.sendInitPresence()
 
         self.client = client
-        self.nickname = JabberID[:JabberID.find('@')]
+        if nickname is None:
+            self.nickname = JabberID[:JabberID.find('@')]
+        else:
+            self.nickname = nickname
         self.newnick = ''
 
         self.notFirstNick = False
@@ -1674,6 +1677,7 @@ def usage():
     print "-u, --user\t Jabber/XMPP username in the format name@xmppserver.tld"
     print "-w, --password\t Password for Jabber/XMPP account"
     print "-d, --debug\t turn debug messages on"
+    print "-n, --nick\t nickname to be used in MUCS"
 
 def main():
     """Main function where the control flow stars """
@@ -1681,12 +1685,14 @@ def main():
     user = ''
     password = ''
     debug = False
+    nickname = None
     try:
         opts, args = getopt.getopt(sys.argv[1:],
-                                   "u:p:w:h:d",
+                                   "u:p:w:n:h:d",
                                    ["user=",
                                     "port=",
                                     "password=",
+                                    "nick=",
                                     "help",
                                     "debug"])
     except getopt.GetoptError:
@@ -1716,6 +1722,8 @@ def main():
         if o in ("-d", "--debug"):
             print "debug messages on"
             debug = True
+        if o in ("-n", "--nick"):
+            nickname = a
 
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     service.bind(("", port))
@@ -1724,7 +1732,7 @@ def main():
     print "listening on port", port
 
     (clientsocket, address ) = service.accept()
-    ct = ClientThread(clientsocket, port, user, password, debug)
+    ct = ClientThread(clientsocket, port, user, password, debug, nickname)
     ct.start()
     service.shutdown(socket.SHUT_RDWR)
 
