@@ -209,7 +209,7 @@ class ClientThread(Thread):
             self.socket.send(msg)
         except:
             self.connected = False
-            self.printError('FATAL ERROR WHILE TRYING TO WRITE IRC MESSAGE TO SOCKET, DISCONNECTING')
+            self.printError('Fatal error while trying to write irc message to socket, disconnecting')
 
     def sendToXMPP(self, msg):
         """Sends message XMPP server
@@ -395,7 +395,7 @@ class ClientThread(Thread):
             try: # remove
                 del (self.mucs['roster'][jid])
             except:
-                self.printError('GOT UNEXPECTED ERROR')
+                self.printError('Tried to remove nickname %s from #roster' % jid)
         elif jid != str(self.JID) and not self.mucs['roster'].has_key(jid):
             message = ':%s!%s JOIN :#roster' % (nick, jid)
             self.mucs['roster'][jid] = { 'role': 'participant',
@@ -910,7 +910,7 @@ class ClientThread(Thread):
             try:
                 data = self.socket.recv(4096)
             except:
-                self.printError('GOT ERROR SHUTTING DOWN')
+                self.printError('Not receiving enough data from socket')
                 self.connected = False
             if data.find ( 'PING' ) != -1:
                 # check that our rooms are still alive
@@ -1484,7 +1484,7 @@ class ClientThread(Thread):
         try:
             unicode(data, 'utf-8')
         except exceptions.UnicodeDecodeError:
-            self.printError('GOT ERROR')
+            self.printError('Unicode decode error. Your IRC client is (probably) not writing utf-8')
             self.ircCommandERROR('Input form IRC client was not in utf-8. Turn utf-8 support on from your IRC client or input only pure ascii',-1)
             return
 
@@ -1574,7 +1574,7 @@ class ClientThread(Thread):
                         if mn[mn.find('/')+1:] == jid:
                             targetnicks.append(mn)
                 if len(targetnicks) != 1:
-                    self.printError('Problems')
+                    self.printError('Trying to send private message to more than one contact?')
                 else:
                     jid = targetnicks[0]
                     self.ircCommandERROR('Telepaatti forwarded your message to JID: %s' % jid)
