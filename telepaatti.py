@@ -941,7 +941,11 @@ class ClientThread(Thread):
         if not jt.connected:
             self.ircCommandNOTICE('XMPP server disconnected, shutting down Telepaatti.')
         jt.connected = False
-        self.socket.shutdown(socket.SHUT_RDWR)
+        try:
+            self.socket.shutdown(socket.SHUT_RDWR)
+        except socket.error:
+            self.printError('Socket shutdown client')
+        self.socket.close()
 
     def messageHandlerError(self, sess, mess):
         """Handle incoming error messages from XMPP
@@ -1738,7 +1742,11 @@ def main():
     (clientsocket, address ) = service.accept()
     ct = ClientThread(clientsocket, port, user, password, debug, nickname)
     ct.start()
-    service.shutdown(socket.SHUT_RDWR)
+    try:
+        service.shutdown(socket.SHUT_RDWR)
+    except socket.error:
+        self.printError('Socket shutdown main')
+    service.close()
 
 if __name__ == "__main__":
     main()
