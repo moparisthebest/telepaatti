@@ -1429,7 +1429,8 @@ class ClientThread(Thread):
                                 nick, room))
                         elif inroom:
                             self.ircCommandPART(nick, room, 'left')
-                            del (self.mucs[room][nick])
+                            if nick in self.mucs[room].keys():
+                                 del (self.mucs[room][nick])
                         else:
                             line = "%s is doing something" % nick
                             self.printDebug(line.encode('utf-8'))
