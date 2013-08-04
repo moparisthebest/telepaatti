@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/local/bin/python
 """
 
 Telepaatti, IRC to Jabber/XMPP gateway.
@@ -20,15 +20,17 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 02110-1301, USA.
 
 For more information about Telepaatti see http://23.fi/telepaatti
-
 """
 
 import socket
+import ssl
 import time, datetime
 import exceptions
 from threading import *
 from xmpp import *
 import getopt, sys
+import daemon
+import urllib
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
 TELEPAATTIVERSION = 1
@@ -64,57 +66,44 @@ class JabberThread(Thread):
 
 class ClientThread(Thread):
     """ ClientThread class for handling IRC and Jabber connections."""
-    def __init__(self,socket, port, JabberID, passwd, debug=False, nickname=None):
+    def __init__(self,socket, port, server, muc_server, debug=False):
         """Constructor for ClientThread class
 
         @type socket: socket
         @type port: integer
-        @type JabberID: JID
-        @type passwd: string
+        @type server:  server part of JID
         @param socket: socket on which the connection is made
         @param port: port of the connection
-        @param JabberID: the Jabber ID of the connetor
-        @param passwd: the passwd of the Jabber ID
         """
         Thread.__init__(self)
         self.socket = socket
         self.port = port
-        self.passwd = passwd
-        self.JID = JID("%s/%s" %(JabberID,'telepaatti'))
-        client=Client(self.JID.getDomain(),debug=[])
+        self.server = server
+        self.muc_server = muc_server
+        self.client = None
+        self.JID = None
+        self.passwd= None
 
-        client.connect(proxy={})
-        client.RegisterHandler('message',self.messageHandler)
-        client.RegisterHandler('presence',self.presenceHandler)
-        client.RegisterHandler('iq' ,self.iqHandler)
-
-        client.auth(self.JID.getNode(), self.passwd, self.JID.getResource())
-
-        client.sendInitPresence()
-
-        self.client = client
-        if nickname is None:
-            self.nickname = JabberID[:JabberID.find('@')]
-        else:
-            self.nickname = nickname
+        self.nickname = None
+            
         self.newnick = ''
 
-        self.notFirstNick = False
         self.mucs = {}
         self.mucs['roster'] = {}
 
-        self.rosterMessages = list()
         self.joinedRoster = False
 
         self.connected = True
 
-        self.nickmapper = {}
+        self.JIDtoUID = {}
+        self.UIDtoJID = {}
 
         self.nickChangeInMucs = {}
 
         self.joinQueue = {}
         self.roomPingQueue = {}
         self.disconnectedMucs = {}
+        self.changingNick = {}
         self.pingCounter = 0
 
         self.xmppSem = BoundedSemaphore(value=1)
@@ -163,27 +152,79 @@ class ClientThread(Thread):
         @rtype: string
         @return: fixed nick
         """
-        nick = unicode(nick)
-        fixednick = nick.replace(' ', '_')
+        
+        fixednick = unicode(nick)
+        fixednick = fixednick.replace(' ', '_')
         fixednick = fixednick.replace('!', '_')
         fixednick = fixednick.replace(':', '_')
-        self.nickmapper[fixednick] = nick
+        fixednick = fixednick.replace('@', '_')
         return fixednick
 
-    def unfixNick(self, fixednick):
-        """Reverses nicks fixed with fixNick function. Is also unfinished
+    def makeHostFromJID(self, jid):
+        """ builds the host part from a given jid
 
-        @type fixednick: string
-        @param fixednick: nickname to unfix
-        @rtype: string
-        @return: unfixed nick
+        @type jid: JID
+        @param jid: The JID from which to make the host part
+        @rtype string
+        @return valid Host part
         """
-        nick = fixednick
-        try:
-            nick = self.nickmapper[fixednick]
-        except:
-            self.printError('unfixNick did not work')
+
+        return "%s@%s/%s" % (urllib.quote(jid.getNode()), urllib.quote(jid.getDomain()), urllib.quote(jid.getResource()))
+
+        
+    def makeNickFromJID(self, jid, is_muc_jid):
+        """ builds a nick from a given jid
+        
+        @type jid: JID
+        @type is_muc_jid: boolean
+        @param jid: The JID from which to make a nick
+        @param is_muc_jid: Whethr this JID belongs to a MUC
+        @rtype:string
+        @return: valid IRC nick
+        """
+        
+        if is_muc_jid and not jid.getResource():
+            return self.fixNick(jid.getNode())
+
+        jid_string = u''
+        if not is_muc_jid:
+            jid_string = jid.getStripped()
+        else:
+            jid_string = unicode(jid)
+            
+        uid = 0
+        if self.JIDtoUID.has_key(jid_string):
+            uid = self.JIDtoUID[jid_string]
+        else:
+            uid = len(self.JIDtoUID)
+            self.JIDtoUID[jid_string] = uid
+            self.UIDtoJID[uid] = JID(jid_string)
+            
+        if not is_muc_jid:
+            nick = "%s|%s" % (self.fixNick(jid.getNode()), uid)
+        else:
+            nick = "%s|%s" % (self.fixNick(jid.getResource()), uid)
+        
         return nick
+
+    def getJIDFromNick(self, nick):
+        """Reverses obtains a JID corresponding to a nick generated by makeNickFromJID
+
+        @type nick: string
+        @param nick: nickname from which to recover a JID
+        @rtype: JID
+        @return: JID corresponding to nick
+        """
+        
+        split_nick = nick.rsplit('|', 1)
+        if len(split_nick) == 2:
+            uid = int(split_nick[1])
+            if self.UIDtoJID.has_key(uid):
+                return self.UIDtoJID[uid]
+        if nick.find('@') != -1:
+            return JID(nick)
+            
+        return None
 
     def makeIRCACTION(self, msg):
         """Makes IRC action message
@@ -221,22 +262,22 @@ class ClientThread(Thread):
         self.client.send(msg)
         self.xmppSem.release()
 
-    def ircGetStatus(self, nick, channel):
+    def ircGetStatus(self, jid, room_jid):
         """Get IRC status
 
-        @type nick: string
-        @type channel: string
-        @param nick: nick whos status to get
-        @param channel: the channel on which status to get
+        @type jid: JID
+        @type room_jid: JID
+        @param jid: JID of the user whose status should be obtained
+        @param room_jid: the room for which to get the status
         @rtype: string
         @return: IRC-style status string
         """
         sta = 'H'
         show = ''
         role = ''
-        if self.mucs.has_key(channel):
-            show = self.mucs[channel][nick]['show']
-            role = self.mucs[channel][nick]['role']
+        if self.mucs.has_key(room_jid):
+            show = self.mucs[room_jid][jid]['show']
+            role = self.mucs[room_jid][jid]['role']
         if show in ['away','xa', 'dnd']:
             sta = 'G'
         if role == 'moderator':
@@ -245,84 +286,89 @@ class ClientThread(Thread):
             sta = '%s+' % sta
         return sta
 
-    def ircCommandJOIN(self, nick, channel):
+    def ircCommandJOIN(self, jid):
         """IRC command join channel
 
-        @type nick: string
-        @type channel: string
-        @param nick: nick who is joining
-        @param channel: channel whats been joined
+        @type jid: JID
+        @param jid: The MUC JID for which to generate a JOIN message
         """
-        onick = nick
-        resource = self.fixNick(nick.getResource())
-        nick = self.fixNick(nick)
+        nick = self.makeNickFromJID(jid, True)
+        channel = jid.getStripped()
         msg = ':%s!%s JOIN :#%s' % (
-            resource,
             nick,
+            self.makeHostFromJID(jid),
             channel)
         self.sendToIRC(msg)
 
-        role = self.mucs[channel][onick]['role']
+        role = self.mucs[channel][jid]['role']
         args = ''
         if role == 'moderator':
             args = '+o'
         elif role == 'participant':
             args = '+v'
         if args:
-            self.ircCommandMODEMUCUSER(JID('%s/telepaatti' % channel), onick, channel, args)
+            self.ircCommandMODEMUCUSER(JID(channel), jid, args)
 
-    def ircCommandSELFJOIN(self, nick, room):
+    def ircCommandSELFJOIN(self, room_jid):
         """IRC command join channel
 
-        @type nick: string
-        @type room: string
-        @param nick: nick who is joining
-        @param room: channel whats been joined
+        @type room_jid: JID
+        @param room_jid: JID of the room we want to join
         """
-        snick = self.fixNick(self.nickname)
+        snick = self.nickname
         lines = list()
-        lines.append(':%s JOIN :#%s'% (snick, room))
-        lines.append(':localhost MODE #%s' % room)
-
-        for nick in self.mucs[room].iterkeys():
-            onick = nick
-            nick = nick.getResource()
-            nick = self.fixNick(nick)
-            oonick = nick
-            if self.mucs[room][onick]['role'] == 'moderator':
-                oonick = "@%s" % oonick
-            elif self.mucs[room][onick]['role'] == 'participant':
-                oonick = "+%s" % oonick
-            lines.append(':localhost 353 %s = #%s :%s' % (snick, room, oonick))
-        lines.append(':localhost 366 %s #%s :End of /NAMES list.'% (snick, room))
+        lines.append(':%s JOIN :#%s'% (snick, room_jid))
+        lines.append(':localhost MODE #%s' % room_jid)
+        
+        for jid in self.mucs[room_jid].iterkeys():
+            nick = snick
+            if (jid.getResource() != nick):
+                nick = self.makeNickFromJID(jid, True)
+            if self.mucs[room_jid][jid]['role'] == 'moderator':
+                nick = "@%s" % nick
+            elif self.mucs[room_jid][jid]['role'] == 'participant':
+                nick = "+%s" % nick
+            lines.append(':localhost 353 %s = #%s :%s' % (snick, room_jid, nick))
+        lines.append(':localhost 366 %s #%s :End of /NAMES list.'% (snick, room_jid))
         while lines:
             msg = lines.pop(0)
             self.sendToIRC(msg)
 
-    def ircCommandPART(self, nick, channel, text):
+    def ircCommandPART(self, jid, text):
         """IRC command part channel
 
-        @type nick: string
-        @type channel: string
+        @type jid: JID
         @type text: string
-        @param nick: nick who is parting
-        @param channel: channel whats been parted
+        @param jid: The MUC JID for which to generate a PART message
         @param text: the part message
         """
-        resource = self.fixNick(nick.getResource())
-        nick = self.fixNick(nick)
+        nick = self.makeNickFromJID(jid, True)
         msg = ':%s!%s PART #%s :%s' % (
-            resource,
             nick,
-            channel,
+            self.makeHostFromJID(jid),
+            jid.getStripped(),
             text)
         self.sendToIRC(msg)
+        
+    def ircCommandNICK(self, old_jid, new_jid):
+        """Reports a nick change to the IRC client
+        
+        @type old_jid: JID
+        @type new_jid: JID
+        @param old_jid: JID before the nick change
+        @param new_jid: JID after the nick change
+        """
+        
+        msg = ':%s!%s NICK :%s' % (
+            self.makeNickFromJID(old_jid, True),
+            self.makeHostFromJID(old_jid),
+            self.makeNickFromJID(new_jid, True))
+        self.sendToIRC(msg)     
 
     def ircCommandROSTERPART(self):
         """Part roster channel"""
         self.joinedRoster = False
-        msg = ':%s!%s PART #roster : ' % (self.nickname,
-                                              unicode(self.JID))
+        msg = ':%s!%s PART #roster : ' % (self.nickname, self.makeHostFromJID(self.JID))
         self.sendToIRC(msg)
 
     def ircCommandROSTERPRIVMSGMUC(self, msg):
@@ -355,7 +401,7 @@ class ClientThread(Thread):
     def ircCommandROSTERSELFJOIN(self):
         """Join roster channel. This handles cases when user self joins to
         roster channel"""
-        snick = self.fixNick(self.nickname)
+        snick = self.nickname
         lines = list()
         room = 'roster'
         lines.append(':%s JOIN :#%s'% (snick, room))
@@ -365,9 +411,9 @@ class ClientThread(Thread):
         lines.append(':localhost MODE #%s' % room)
         lines.append(':localhost 353 %s = #%s :%s' % (snick, room, snick))
 
-        for nick in self.mucs[room].iterkeys():
-            nick = self.fixNick(nick)
-            if not (snick == nick):
+        for jid in self.mucs[room].iterkeys():
+            nick = self.makeNickFromJID(jid, False)
+            if not (jid.getResource() == self.nickname):
                 lines.append(':localhost 353 %s = #%s :%s' % (snick, room, nick))
         lines.append(':localhost 366 %s #%s :End of /NAMES list.'% (snick, room))
 
@@ -376,8 +422,6 @@ class ClientThread(Thread):
             self.sendToIRC(msg)
 
         self.joinedRoster = True
-        for msg in self.rosterMessages:
-            self.sendToIRC(msg)
 
     def ircCommandROSTERMSG(self, pres):
         """Roster channel messages. Here is traced roster users statas
@@ -385,19 +429,20 @@ class ClientThread(Thread):
         @type pres: Presence
         @param pres: Presence of the roster user
         """
-        nick = pres.getFrom()
         jid = pres.getFrom()
+        nick = self.makeNickFromJID(jid, False)
         message = ''
         dt = "%s" % datetime.datetime.now()
         dt = dt[:-7]
-        if jid != str(self.JID) and pres.getType() == 'unavailable': # left
-            message = ':%s!%s PART #roster :[%s] Offline' % (nick,jid,dt)
-            try: # remove
-                del (self.mucs['roster'][jid])
-            except:
-                self.printError('Tried to remove nickname %s from #roster' % jid)
+        if jid != self.JID and pres.getType() == 'unavailable': # left
+            if self.mucs['roster'].has_key(jid):
+                message = ':%s!%s PART #roster :[%s] Offline' % (nick,self.makeHostFromJID(jid),dt)
+                try: # remove
+                    del (self.mucs['roster'][jid])
+                except:
+                    self.printError('Tried to remove nickname %s from #roster' % jid)
         elif jid != str(self.JID) and not self.mucs['roster'].has_key(jid):
-            message = ':%s!%s JOIN :#roster' % (nick, jid)
+            message = ':%s!%s JOIN :#roster' % (nick, self.makeHostFromJID(jid))
             self.mucs['roster'][jid] = { 'role': 'participant',
                                          'affiliation': 'member'}
         else:
@@ -407,24 +452,24 @@ class ClientThread(Thread):
                     pres.getStatus()))
             message = ':%s!%s PRIVMSG #roster :%s' % (
                 nick,
-                jid,
+                self.makeHostFromJID(jid),
                 action)
-        self.rosterMessages.append(message)
-        if self.joinedRoster:
+        if self.joinedRoster and message != '':
             self.sendToIRC(message)
 
-    def ircCommandPRIVMSG(self, nick, text, timestamp=''):
+    def ircCommandPRIVMSG(self, jid, is_muc, is_private, text, timestamp=''):
         """Converts private messages to IRC client
 
-        @type nick: string
+        @type jid: JID
+        @type is_muc: boolean
         @type text: string
         @type timestamp: string
-        @param nick: the nickname whois messaging
+        @param jid: the JID from which the mesage was sent
+        @param is_muc: whether the message was sent in a muc
         @param text: the message
         @param timestamp: timestamp of the message
         """
-        nick = self.fixNick(nick)
-        nick = unicode(nick)
+        nick = self.makeNickFromJID(jid, is_muc)
         lines = text.splitlines()
         messages = list()
         for line in lines:
@@ -437,103 +482,66 @@ class ClientThread(Thread):
             if action:
                 line = self.makeIRCACTION(line)
 
-            msg = ':%s!%s PRIVMSG %s :%s' % (nick, nick, self.fixNick(self.nickname),line)
+            if is_muc and not is_private:
+                msg = ':%s!%s PRIVMSG #%s :%s' % (nick, self.makeHostFromJID(jid), jid.getStripped(), line)
+            else:
+                msg = ':%s!%s PRIVMSG %s :%s' % (nick, self.makeHostFromJID(jid), self.nickname,line)
             messages.append(msg)
         for msg in messages:
             self.sendToIRC(msg)
 
-    def ircCommandPRIVMSGMUC(self, orgnick, channel, text, timestamp=''):
-        """Converts MUC messages to IRC channel messages
-
-        @type orgnick: string
-        @type channel: string
-        @type text: string
-        @type timestamp: string
-        @param orgnick: the nickname whois messaging
-        @param channel: the channel
-        @param text: the message
-        @param timestamp: timestamp of the message
-        """
-        lines = text.splitlines()
-        messages = list()
-        for line in lines:
-            action = False
-            if line.upper().startswith('/ME '):
-                line = line[4:]
-                action = True
-            if timestamp:
-                line = "[%s] %s " % (timestamp, line)
-            if action:
-                line = self.makeIRCACTION(line)
-            nick = orgnick.getResource()
-            nick = self.fixNick(nick)
-            msg = ':%s PRIVMSG #%s :%s' % (nick,
-                                               channel,
-                                               line)
-            messages.append(msg)
-        for msg in messages:
-            self.sendToIRC(msg)
-
-    def ircCommandTOPIC(self, nick, channel, text):
+    def ircCommandTOPIC(self, jid, topic):
         """Converts MUC topic to IRC channel topic
 
-        @type nick: string
-        @type channel: string
-        @type text: string
-        @param channel: name of the channel
-        @param nick: the nickname whois messaging
-        @param text: the message
+        @type jid: JID
+        @type topic: string
+        @param jid: The jid who initiated the topic change
+        @param topic: the topic
         """
-        snick = self.fixNick(nick.getResource())
-        nick = self.fixNick(nick)
-        msg =':%s!%s TOPIC #%s :%s' % (snick, nick, channel, text)
+        nick = self.makeNickFromJID(jid, True)
+        msg =':%s!%s TOPIC #%s :%s' % (nick, self.makeHostFromJID(jid), jid.getStripped(), topic)
         self.sendToIRC(msg)
 
-    def ircCommandMODEMUC(self, channel, args):
+    def ircCommandMODEMUC(self, room_jid, args):
         """Converts MUC mode to IRC channel mode
 
-        @type channel: string
+        @type room_jid: JID
         @type args: string
-        @param channel: anme of the channel
+        @param room_jid: JID of the room
         @param args: arguments of the mode
         """
-        nick = self.fixNick(self.nickname)
-        msg = ':localhost 324 %s #%s %s' % (nick, channel, args)
+        nick = self.nickname
+        msg = ':localhost 324 %s #%s %s' % (nick, room_jid, args)
         self.sendToIRC(msg)
-        msg = ':localhost 329 %s #%s %s' % (nick, channel, '1031538353')
+        msg = ':localhost 329 %s #%s %s' % (nick, room_jid, '1031538353')
         self.sendToIRC(msg)
 
-    def ircCommandMODEMUCBANLIST(self, channel):
+    def ircCommandMODEMUCBANLIST(self, room_jid):
         """Converts MUC ban list to IRC channel banlist, is unfinished
 
-        @type channel: string
-        @param channel: name of the channel
+        @type room_jid: JID
+        @param room_jid: JID of the room
         """
-        nick = self.fixNick(self.nickname)
-        msg = ':localhost 368 %s #%s :End of Channel Ban List' % (nick, channel)
+        nick = self.nickname
+        msg = ':localhost 368 %s #%s :End of Channel Ban List' % (nick, room_jid)
         self.sendToIRC(msg)
 
-    def ircCommandMODEMUCUSER(self, giver, taker, muc, args):
+    def ircCommandMODEMUCUSER(self, giver, taker, args):
         """Convers MUC user mode to IRC channel user mode. Example use cases
         are when someone is granted a voice or admin rights on a MUC.
 
-        @type giver: string
-        @type taker: string
-        @type muc: string
+        @type giver: JID
+        @type taker: JID
         @type args: string
-        @param giver: giver of the new mode
-        @param taker: taker of the new mode
-        @param muc: MUC on which the mode takes place
+        @param giver: The user initiating the mode change
+        @param taker: The user affected by the mode change
         @param args: arguments of the mode
         """
-        givernick = self.fixNick(giver.getResource())
-        giver = self.fixNick(giver)
-        taker = self.fixNick(taker.getResource())
-        msg = ':%s!%s MODE #%s %s %s' % (givernick,
-                                         giver,
-                                         muc,
+        msg = ':%s!%s MODE #%s %s %s' % (self.makeNickFromJID(giver, True),
+                                         self.makeHostFromJID(giver),
+                                         taker.getStripped(),
                                          args,
-                                         taker)
+                                         self.makeNickFromJID(taker, True))
         self.sendToIRC(msg)
 
     def ircCommandMODE(self, args):
@@ -543,8 +551,7 @@ class ClientThread(Thread):
         @param args: arguments of the mode
         """
         # just to keep irssi happy, fix later to more meaningfull
-        nick = self.fixNick(self.nickname)
-        msg = ':%s MODE %s :%s' % (nick, nick, args)
+        msg = ':%s MODE %s :%s' % (self.nickname, self.nickname, args)
         self.sendToIRC(msg)
 
     def ircCommandERROR(self, message='', ircerror=0):
@@ -561,7 +568,9 @@ class ClientThread(Thread):
         elif ircerror == -1:
             msg = 'ERROR :Telepaatti error %s' % message
         elif ircerror == 403:
-            msg = ':localhost 403 %s localhost :That channel doesn\'t exist' % self.fixNick(self.nickname)
+            msg = ':localhost 403 %s localhost :That channel doesn\'t exist' % self.nickname
+        elif ircerror == 464:
+            msg = ':localhost 464 :Password incorrect'
         self.sendToIRC(msg)
 
     def ircCommandERRORMUC(self, number, errormess, room):
@@ -603,65 +612,54 @@ class ClientThread(Thread):
             text = 'No text'
 
         msg = ':localhost %s %s #%s :%s' % (
-            number, self.fixNick(self.nickname), room, text)
+            number, self.nickname, room, text)
         self.sendToIRC(msg)
         self.ircCommandERROR(errormess)
 
-    def ircCommandWHO(self, users, channel):
+    def ircCommandWHO(self, users, room_jid):
         """Convert XMPP vcard query to IRC who
 
         @type users: list
-        @type channel: string
+        @type room_jid: JID
         @param users: list of users
-        @param channel: the channel (MUC)
+        @param room_jid: the JID of the room
         """
         for user in users:
-            oruser = user
-            user = unicode(user)
-            at = user.find('@')
-            slash = user.find('/')
-            domain = channel[at+1:]
-            if at > 0 and slash > at:
-                onick = user[slash+1:]
-            user = self.fixNick(user)
-            nick = self.fixNick(onick)
+            nick = self.makeNickFromJID(user, True),
             msg = ':localhost 352 %s #%s %s %s localhost %s %s :0 %s' % (
-                self.fixNick(self.nickname),
-                channel,
-                self.fixNick(user[:at]),
-                self.fixNick(user[at+1:]),
+                self.nickname,
+                room_jid,
+                user.getResource(),
+                user.getDomain(),
                 nick,
-                self.ircGetStatus(oruser, channel),
-                onick)
+                self.ircGetStatus(user, room_jid),
+                self.fixNick(user.getResource()))
             self.sendToIRC(msg)
 
-        msg = ':localhost 315 %s #%s :End of /WHO list.' % (self.fixNick(self.nickname), channel)
+        msg = ':localhost 315 %s #%s :End of /WHO list.' % (self.nickname, room_jid)
         self.sendToIRC(msg)
 
     def ircCommandWHOIS(self, jid):
         """Convert XMPP vcard query to IRC whois
 
         @type jid: JID
-        @param jid: Jabber id of the user whos vcard is quered
+        @param jid: Jabber id of the user whose vcard is quered
         """
-        nick = self.fixNick(self.nickname)
-        whonick = jid
-        if self.mucs.has_key(jid.getStripped()):
-            whonick = self.fixNick(jid.getResource())
+        nick = self.makeNickFromJID(jid, self.mucs.has_key(jid.getStripped()))
         lines = [
-            ':localhost 311 %s %s %s %s * : %s' % (nick,
-                                                   whonick,
+            ':localhost 311 %s %s %s %s * : %s' % (self.nickname,
+                                                   nick,
                                                    jid.getNode(),
                                                    jid.getDomain(),
-                                                   whonick),
-            ':localhost 312 %s %s localhost : XMPP telepaatti' % (nick, whonick),
-            ':localhost 318 %s %s :End of /WHOIS list.' % (nick, whonick)]
+                                                   nick),
+            ':localhost 312 %s %s localhost : XMPP telepaatti' % (self.nickname, nick),
+            ':localhost 318 %s %s :End of /WHOIS list.' % (self.nickname, nick)]
         while lines:
             self.sendToIRC(lines.pop(0))
 
     def ircCommandUNAWAY(self):
         """Convert XMPP status to IRC away"""
-        nick = self.fixNick(self.nickname)
+        nick = self.nickname
         msg = ':localhost 305 %s :%s' % (
             nick,
             'You are no longer marked as being away')
@@ -669,7 +667,7 @@ class ClientThread(Thread):
 
     def ircCommandNOWAWAY(self):
         """Convert XMPP status to IRC not away"""
-        nick = self.fixNick(self.nickname)
+        nick = self.nickname
         msg = ':localhost 306 %s :%s' % (
             nick,
             'You have been marked as being away')
@@ -681,7 +679,7 @@ class ClientThread(Thread):
         @type text: string
         @param text: notice text
         """
-        nick = self.fixNick(self.nickname)
+        nick = self.nickname
         msg = 'NOTICE %s :%s' % (nick, text)
         self.sendToIRC(msg)
 
@@ -694,7 +692,7 @@ class ClientThread(Thread):
         text = "is making subsciption request to you with message: \"%s\" You MUST either approve the request or refuse the request. You can approve it by joinin #roster channel andthen type \"!subscribed %s\" if you wish to subscibe to contact or \"!unsubscribed %s\" if you wish not to subscibe to contact" % (pres.getStatus(), pres.getFrom(), pres.getFrom())
         text = self.makeIRCACTION(text)
         self.printDebug(str(pres))
-        self.ircCommandPRIVMSG(pres.getFrom(), text)
+        self.ircCommandPRIVMSG(pres.getFrom(), False, True, text)
 
     def ircCommandUNSUBSCRIBE(self, pres):
         """Convert XMPP unsubscribe message to IRC message. Unfinished.
@@ -796,8 +794,8 @@ class ClientThread(Thread):
         for muc in self.mucs.keys():
             if muc != 'roster':
                 p=Presence(to='%s/%s' % (
-                        muc,
-                        self.nickname))
+                           muc,
+                           self.nickname))
                 if not show == '':
                     p.setShow(show)
                 p.setStatus(status)
@@ -888,10 +886,40 @@ class ClientThread(Thread):
         pass
 
     def run(self):
-        """Here is this threads main functionality. Jabber-thread is started
-        and polling of socket for IRC-messages is in here."""
-        jt = JabberThread(self.client)
-        jt.start()
+        while self.connected and self.client is None:
+            try:
+                data = self.socket.recv(4096)
+            except:
+                self.printError('Not receiving enough data from socket')
+                self.connected = False
+            if data:
+                for line in data.splitlines():
+                    self.commandHandler(line)
+
+                    if (not self.JID is None):
+                        client=Client(self.JID.getDomain(),debug=[])
+
+                        client.connect(proxy={})
+                        client.RegisterHandler('message',self.messageHandler)
+                        client.RegisterHandler('presence',self.presenceHandler)
+                        client.RegisterHandler('iq' ,self.iqHandler)
+
+                        if not client.auth(self.JID.getNode(), self.passwd, self.JID.getResource()):
+                            self.ircCommandERROR('', 464)
+                            try:
+                                self.socket.shutdown(socket.SHUT_RDWR)
+                            except socket.error:
+                                self.printError('Socket shutdown client')
+                            self.socket.close()
+                            return
+
+
+                        client.sendInitPresence()
+
+                        self.client = client
+            else:
+                self.connected = False
+
 
         nick = self.fixNick(self.nickname)
         lines = ["NOTICE AUTH :*** Looking up your hostname...",
@@ -905,6 +933,15 @@ class ClientThread(Thread):
                 self.port,
                 TELEPAATTIVERSION)
                  ]
+        while lines:
+            self.sendToIRC(lines.pop(0))
+
+        """Here is this threads main functionality. Jabber-thread is started
+        and polling of socket for IRC-messages is in here."""
+        jt = JabberThread(self.client)
+        jt.start()
+        
+        self.ircCommandROSTERSELFJOIN()
 
         while self.connected and jt.connected:
             try:
@@ -931,8 +968,6 @@ class ClientThread(Thread):
                 else:
                     self.pingCounter = self.pingCounter + 1
                 self.sendToIRC('PONG localhost')
-            while lines:
-                self.sendToIRC(lines.pop(0))
             if data:
                 for line in data.splitlines():
                     self.commandHandler(line)
@@ -980,13 +1015,11 @@ class ClientThread(Thread):
         if mess.getType() == 'error':
             self.messageHandlerError(sess,mess)
             return
-        nick = mess.getFrom()
+
+        jid = mess.getFrom()
         text = mess.getBody()
         topic = mess.getSubject()
-        room = unicode(mess.getFrom())
-        x = room.find('/')
-        if x > 0:
-            room = room[:room.find('/')]
+        
         ts = ''
         if mess.getTag('x',namespace=NS_DELAY):
             ts=mess.getTimestamp()
@@ -998,16 +1031,18 @@ class ClientThread(Thread):
         if not text and not topic:
             return
 
-        MUC = False
+        private = True
         if mess.getType() == 'groupchat':
-            MUC = True
+            private = False
+        
+        MUC = self.mucs.has_key(jid.getStripped())
 
-        if not MUC:
-            self.ircCommandPRIVMSG(nick, text, ts)
+        if private:
+            self.ircCommandPRIVMSG(jid, MUC, True, text, ts)
         elif topic:
-            self.ircCommandTOPIC(nick, room, topic)
-        elif not nick.getResource() == self.nickname or ts:
-            self.ircCommandPRIVMSGMUC(nick, room, text, ts)
+            self.ircCommandTOPIC(jid, topic)
+        elif not jid.getResource() == self.nickname or ts:
+            self.ircCommandPRIVMSG(jid, True, False, text, ts)
 
 
     def iqHandler(self, con, iq):
@@ -1150,10 +1185,11 @@ class ClientThread(Thread):
         if jid in self.mucs.keys():
             if errornum == '404' and jid not in self.disconnectedMucs.keys():
                 self.ircCommandERRORMUC(404, 'MUC DISCONNECTED', jid)
-                self.ircCommandPRIVMSGMUC(JID("%s/%s" % (jid, 'telepaatti')),
-                                          jid,
-                                          'MUC IS DISCONNECTED YOUR TEXT WILL NOT SHOW ON CHANNEL. YOU CAN WAIT UNTIL MUC CONNECTS AGAIN OR USE /PART TO LEAVE THIS MUC!',
-                                          timestamp='')
+                self.ircCommandPRIVMSG(JID("%s/%s" % (jid, 'telepaatti')),
+                                       True,
+                                       False,
+                                       'MUC IS DISCONNECTED YOUR TEXT WILL NOT SHOW ON CHANNEL. YOU CAN WAIT UNTIL MUC CONNECTS AGAIN OR USE /PART TO LEAVE THIS MUC!',
+                                       timestamp='')
                 self.disconnectedMucs[jid] = 0
                 return
             else:
@@ -1181,10 +1217,10 @@ class ClientThread(Thread):
             for c in ch:
                 name = c.getName()
                 if name == 'item':
-                    mucusers.append(c.getAttrs()['jid'])
+                    mucusers.append(JID(c.getAttrs()['jid']))
             if self.mucs.has_key(jid):
                 pass # we keep track of users else where
-            self.ircCommandWHO(mucusers, unicode(jid))
+            self.ircCommandWHO(mucusers, jid)
             return
         else:
             self.printDebug('UNKNOWN DISCO ITEM %s ' % jid)
@@ -1279,9 +1315,7 @@ class ClientThread(Thread):
         show = pres.getShow()
         status = pres.getStatus()
 
-
-        room = unicode(pres.getFrom())
-        room = room[:room.find('/')]
+        room = JID(pres.getFrom().getStripped())
 
         # for affiliation and role changes
         if MUC and \
@@ -1292,14 +1326,14 @@ class ClientThread(Thread):
             if role != xrole: # role has changed
                 giver = JID('%s/telepaatti' % room)
                 if role.upper() == 'MODERATOR':
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '+o')
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '-v')
+                    self.ircCommandMODEMUCUSER(giver, nick, '+o')
+                    self.ircCommandMODEMUCUSER(giver, nick, '-v')
                 if role.upper() == 'PARTICIPANT':
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '-o')
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '+v')
+                    self.ircCommandMODEMUCUSER(giver, nick, '-o')
+                    self.ircCommandMODEMUCUSER(giver, nick, '+v')
                 if role.upper() == 'VISITOR':
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '-o')
-                    self.ircCommandMODEMUCUSER(giver, nick, room, '-v')
+                    self.ircCommandMODEMUCUSER(giver, nick, '-o')
+                    self.ircCommandMODEMUCUSER(giver, nick, '-v')
                 else:
                     self.printDebug('MODE NONE')
             if xaffiliation != affiliation: # affiliation has changed
@@ -1418,8 +1452,9 @@ class ClientThread(Thread):
                             self.printDebug('we are between nick change')
                             return
                         elif inroom:
-                            self.ircCommandPART(nick, room, ' left')
-                            del (self.mucs[room])
+                            self.ircCommandPART(nick, ' left')
+                            if nick in self.mucs[room].keys():
+                                del (self.mucs[room])
                         else:
                             line = "%s is doing something" % nick
                             self.printDebug(line.encode('utf-8'))
@@ -1428,9 +1463,12 @@ class ClientThread(Thread):
                             self.printDebug("%s left while we are joining room %s" % (
                                 nick, room))
                         elif inroom:
-                            self.ircCommandPART(nick, room, 'left')
-                            if nick in self.mucs[room].keys():
-                                 del (self.mucs[room][nick])
+                            if pres.getStatusCode() == '303':
+                                self.changingNick[JID("%s/%s" % (nick.getStripped(), pres.getNick()))] = nick
+                            else:
+                                self.ircCommandPART(nick, 'left')
+                                
+                            del (self.mucs[room][nick])
                         else:
                             line = "%s is doing something" % nick
                             self.printDebug(line.encode('utf-8'))
@@ -1445,7 +1483,7 @@ class ClientThread(Thread):
                                                                                       'show' : show,
                                                                                       'status': status}
                             del(self.joinQueue[room])
-                            self.ircCommandSELFJOIN(self.nickname, room)
+                            self.ircCommandSELFJOIN(room)
                         elif inroom:
                             self.mucs[room][JID("%s/%s" % (room, self.nickname))] = { 'role': role,
                                                                                       'affiliation': affiliation,
@@ -1464,17 +1502,15 @@ class ClientThread(Thread):
                                                                         'show' : show,
                                                                         'status': status}
                         elif inroom:
-                            if nick not in self.mucs[room].keys():
-                                self.mucs[room][nick] = { 'role': role,
-                                                          'affiliation': affiliation,
-                                                          'show' : show,
-                                                          'status': status }
-                                self.ircCommandJOIN(nick, room)
-                            else:
-                                self.mucs[room][nick] = { 'role': role,
-                                                          'affiliation': affiliation,
-                                                          'show' : show,
-                                                          'status': status }
+                            new_user = nick not in self.mucs[room].keys()
+                            self.mucs[room][nick] = { 'role': role,
+                                          'affiliation': affiliation,
+                                          'show' : show,
+                                          'status': status }
+                            if nick in self.changingNick.keys():
+                                self.ircCommandNICK(self.changingNick[nick], nick)
+                            elif new_user:
+                                self.ircCommandJOIN(nick)
                         else:
                             self.printDebug('TROUBLE LINE')
 
@@ -1495,47 +1531,76 @@ class ClientThread(Thread):
 
         args = data.split(' ', 1)
         arguments = u''
-        command = args[0]
+        command = args[0].upper()
         if len(args) == 2:
             arguments = args[1]
-        command = command.upper()
         arguments = arguments.strip()
-        MUC = False
-        if arguments.startswith('#'):
+        MUC = arguments.startswith('#')
+        if (MUC):
             arguments = arguments[1:]
-            MUC = True
+            
+        if self.client is None :
+            if command == 'NICK':
+                nick = ''
+                if arguments[0] == ':':
+                    nick = arguments[1:]
+                else:
+                    nick = arguments
+                self.JID = JID("%s@%s/%s" %(nick, self.server, 'telepaatti'))
+                self.nickname = self.fixNick(nick)
+                
+            elif command == 'PASS':
+                if arguments[0] == ':':
+                    self.passwd = arguments[1:]
+                else:
+                    self.passwd = arguments
+
+            return
 
         if command == 'JOIN':
-            room = arguments
+            #We won't be able to join rooms with a space in their name, but it's not as bad as being unable to join rooms with a password
+            arguments = arguments.split(' ', 1)
+            room = arguments[0]
+            password = u''
+            if len(arguments) == 2:
+                password = arguments[1]
+                
             if room == 'roster':
                 if self.joinedRoster: # already in #roster
                     return
                 self.ircCommandROSTERSELFJOIN()
             else:
                 if room.find('@') < 1:
-                    self.ircCommandERRORMUC(404, 'No such MUC', room)
-                    return
+                    self.printDebug("Joining a room without full jid")
+                    if (self.muc_server is None):
+                        self.ircCommandERRORMUC(404, 'No such MUC', room)
+                        return
+                    room = "%s@%s" % (room, self.muc_server)
+                room = room.lower()
                 if room in self.mucs.keys(): # already in MUC
                     return
-                self.joinQueue[arguments] = {'messages': list(),
-                                             'users': {}}
+                self.printDebug("Joining room: %s" % JID(room))
+                self.joinQueue[JID(room)] = {'messages': list(),
+                                'users': {}}
                 p=Presence(to='%s/%s' % (
                         room,
                         self.nickname))
-                p.setTag('x',namespace=NS_MUC).setTagData('password','')
+                p.setTag('x',namespace=NS_MUC).setTagData('password', password)
                 p.getTag('x').addChild('history',{'maxchars':'10000','maxstanzas':'100'})
                 self.sendToXMPP(p)
 
 
         elif command == 'PART':
             x = arguments.find(' :')
-            room = arguments.strip()
             text = ''
+            room = ''
             if x > 0:
                 text = arguments[x+2:]
                 text = text.strip()
                 room = arguments[:x]
-                room = room.strip()
+                room = JID(room.strip())
+            else:
+                room = JID(arguments.strip())
             if room == 'roster':
                 if not self.joinedRoster: # not in roster
                     return
@@ -1549,8 +1614,8 @@ class ClientThread(Thread):
 
         elif command == 'PRIVMSG':
             x = arguments.find(' :')
-            jid = arguments.strip()
             text = ''
+            nick = ''
             if x > 0:
                 text = arguments[x+2:]
                 text = text.strip()
@@ -1558,55 +1623,55 @@ class ClientThread(Thread):
                 eact = text.rfind('\001')
                 if sact > -1 and eact > -1:
                     text = '/me %s' % text[sact+8:eact]
-                jid = arguments[:x]
-                jid = jid.strip()
+                nick = arguments[:x]
+                nick = nick.strip()
             type = 'chat'
             if MUC:
                 type = 'groupchat'
-            at = jid.find('@')
-            slash = jid.find('/')
 
-            if jid == 'roster':
+            if nick == 'roster':
                 self.ircCommandROSTERPRIVMSGMUC(text)
                 return
-            elif (at < 0) and not MUC: # private msg from muc
-                self.ircCommandERROR('You are trying to send private message someone in MUC room. Jabber can\'t send messages with nick only. Try to sen message to whole MUC jid, for example if you are in room jabber@conference.jabber.org and are trying to send message to nick petteri use /msg jabber@conference.jabber.org/petteri message!')
-                targetnicks = list()
-                for muc in self.mucs.iterkeys():
-                    for mn in self.mucs[muc].keys():
-                        mn = unicode(mn)
-                        mn = mn.encode('utf-8')
-                        if mn[mn.find('/')+1:] == jid:
-                            targetnicks.append(mn)
-                if len(targetnicks) != 1:
-                    self.printError('Trying to send private message to more than one contact?')
-                else:
-                    jid = targetnicks[0]
-                    self.ircCommandERROR('Telepaatti forwarded your message to JID: %s' % jid)
+            
+            jid = self.getJIDFromNick(nick)
+            if jid is None:
+                return
+            
             self.sendToXMPP(protocol.Message(jid,
-                                             text,
-                                             typ = type))
+                             text,
+                             typ = type))
 
         elif command == 'NICK':
-            if self.notFirstNick:
-                self.newnick = arguments
-                for muc in self.getMucs():
-                    self.nickChangeInMucs[muc] = {'checked': False,
-                                                  'changed': False}
-                for muc in self.nickChangeInMucs.keys():
-                    self.xmppCommandMUCPRESENCE(muc, self.newnick)
+            if arguments[0] == ':':
+                self.newnick = self.fixNick(arguments[1:])
             else:
-                self.notFirstNick = True
+                self.newnick = self.fixNick(arguments)
+                
+            if self.newnick == self.nickname:
+                self.newnick = ''
+                return
+                
+            if len(self.getMucs()) == 0:
+                self.sendToIRC(':%s NICK :%s' %
+                               (self.nickname,
+                                self.newnick))
+                self.nickname=self.newnick
+                self.newnick = ''
+                
+            for muc in self.getMucs():
+                self.nickChangeInMucs[muc] = {'checked': False,
+                                'changed': False}
+            for muc in self.nickChangeInMucs.keys():
+                self.xmppCommandMUCPRESENCE(muc, self.newnick)
 
         elif command == 'TOPIC':
             x = arguments.find(' :')
-            jid = arguments.strip()
             text = ''
+            jid = None
             if x > 0:
                 text = arguments[x+2:]
                 text = text.strip()
-                jid = arguments[:x]
-                jid = jid.strip()
+                jid = JID(arguments[:x].strip())
             if jid not in self.mucs.keys():
                 self.ircCommandERROR('', 403)
                 return
@@ -1615,31 +1680,30 @@ class ClientThread(Thread):
                 return
 
             self.sendToXMPP(protocol.Message(jid,
-                                             typ = 'groupchat',
-                                             subject = text))
+                             typ = 'groupchat',
+                             subject = text))
 
         elif command == 'MODE':
             if not arguments:
                 return
-            x = arguments.find(' ')
+            arguments = arguments.split(' ', 2)
             params = ''
-            jid = arguments
-            if x > -1:
-                jid = arguments[:x]
-                params = arguments[x+1:]
-            x = params.find(' ')
-            tonick = ''
-            if x > -1:
-                tonick = params[x+1:]
-                params = params[x:]
-                params.strip()
-
-
-            if jid == 'roster':
+            nick = arguments[0]
+            if nick == 'roster':
                 return
-            elif jid == self.nickname:
+                
+            if len(arguments) >= 2:
+                params = arguments[1]
+            if len(arguments) == 3:
+                tonick = params
+                params = arguments[2]
+
+            if nick == self.nickname:
                 self.ircCommandMODE(params)
             else:
+                jid = self.getJIDFromNick(nick)
+                if jid is None:
+                    return
                 if params.find('b') > -1: # get bandlist
                     self.ircCommandMODEMUCBANLIST(jid)
                     return
@@ -1657,12 +1721,15 @@ class ClientThread(Thread):
         elif command == 'WHO':
             if not arguments:
                 return
-            jid = arguments
+            jid = JID(arguments)
             self.xmppCommandMUCUSERS(jid)
 
         elif command == 'WHOIS':
-            self.ircCommandWHOIS(JID(arguments))
-            self.xmppCommandGETWHOIS(JID(arguments))
+            jid = self.getJIDFromNick(arguments)
+            if jid is None:
+                return
+            self.ircCommandWHOIS(jid)
+            self.xmppCommandGETWHOIS(jid)
 
         elif command == 'AWAY':
             arguments = arguments[1:] # remove the :
@@ -1676,6 +1743,9 @@ class ClientThread(Thread):
                 if len(args) == 2:
                     status = args[1]
             self.xmppCommandSTATUS(show, status)
+            
+        elif command == 'QUIT':
+            self.connected = False
 
 def usage():
     """Usage function for showing commandline options """
@@ -1683,33 +1753,28 @@ def usage():
     print "OPTIONS"
     print "-h, --help\t telepaatti help"
     print "-p, --port\t port which telepaatti listens"
-    print "-u, --user\t Jabber/XMPP username in the format name@xmppserver.tld"
-    print "-w, --password\t Password for Jabber/XMPP account"
+    print "-s, --server\t Jabber/XMPP server to which the connection should be made"
+    print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
     print "-d, --debug\t turn debug messages on"
-    print "-n, --nick\t nickname to be used in MUCS"
+    print "    --ssl\t SSL certificate. Enables ssl when provided"
 
 def main():
-    """Main function where the control flow stars """
     port = 6667
-    user = ''
-    password = ''
+    server = ''
+    muc_server = None
     debug = False
     nickname = None
+    ssl_cert = None
+    
     try:
-        opts, args = getopt.getopt(sys.argv[1:],
-                                   "u:p:w:n:h:d",
-                                   ["user=",
-                                    "port=",
-                                    "password=",
-                                    "nick=",
-                                    "help",
-                                    "debug"])
+        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","debug","ssl=",])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
     if len(opts) == 0:
         usage()
         sys.exit(2)
+    
     for o, a in opts:
         if o in ("-h", "--help"):
             usage()
@@ -1720,19 +1785,15 @@ def main():
             except:
                 print "port should be an integer"
                 sys.exit()
-        if o in ("-u", "--user"):
-            if a.find('@') < 1:
-                print "user name should be in form user@xmppserver.tld"
-                sys.exit()
-            else:
-                user = a
-        if o in ("-w", "--password"):
-            password = a
+        if o in ("-s", "--server"):
+            server = a
+        if o in ("-m", "--muc-server"):
+            muc_server = a
         if o in ("-d", "--debug"):
             print "debug messages on"
             debug = True
-        if o in ("-n", "--nick"):
-            nickname = a
+        if o == "--ssl":
+            ssl_cert = a
 
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     service.bind(("", port))
@@ -1740,14 +1801,23 @@ def main():
 
     print "listening on port", port
 
-    (clientsocket, address ) = service.accept()
-    ct = ClientThread(clientsocket, port, user, password, debug, nickname)
-    ct.start()
-    try:
-        service.shutdown(socket.SHUT_RDWR)
-    except socket.error:
-        self.printError('Socket shutdown main')
-    service.close()
+    while (True):
+        (clientsocket, address ) = service.accept()
+        if ssl_cert is not None:
+            try:
+                clientsocket = ssl.wrap_socket(clientsocket, None, ssl_cert, True, ssl.CERT_NONE, ssl.PROTOCOL_SSLv23)
+            except:
+                print 'Failed SSL handshake'
+                try:
+                    clientsocket.shutdown(socket.SHUT_RDWR)
+                except socket.error:
+                    print 'Failed socket shutdown'
+                clientsocket.close()
+                continue
+        ct = ClientThread(clientsocket, port, server, muc_server, debug)
+        ct.start()
 
 if __name__ == "__main__":
-    main()
+    f = open ('/var/log/telepaatti', 'a')
+    with daemon.DaemonContext(stdout = f, stderr = f):
+        main()
