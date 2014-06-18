@@ -250,7 +250,7 @@ class ClientThread(Thread):
             self.socket.send(msg)
         except:
             self.connected = False
-            self.printError('Fatal error while trying to write irc message to socket, disconnecting')
+            self.printError('Fatal error while trying to write irc message to socket, disconnecting [%s - %s]' % (sys.exc_info()[0], sys.exc_info()[1]))
 
     def sendToXMPP(self, msg):
         """Sends message XMPP server
@@ -896,13 +896,15 @@ class ClientThread(Thread):
                 for line in data.splitlines():
                     self.commandHandler(line)
 
-                    if (not self.JID is None):
+                    if (self.JID is not None and self.passwd is not None):
                         client=Client(self.JID.getDomain(),debug=[])
 
                         client.connect(proxy={})
                         client.RegisterHandler('message',self.messageHandler)
                         client.RegisterHandler('presence',self.presenceHandler)
                         client.RegisterHandler('iq' ,self.iqHandler)
+
+                        self.printDebug("Logging in as %s, with password %s" % (self.JID, self.passwd))
 
                         if not client.auth(self.JID.getNode(), self.passwd, self.JID.getResource()):
                             self.ircCommandERROR('', 464)
@@ -1757,6 +1759,7 @@ def usage():
     print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
     print "-d, --debug\t turn debug messages on"
     print "    --ssl\t SSL certificate. Enables ssl when provided"
+    print "    --log\t telepaatti log file"
 
 def main():
     port = 6667
@@ -1765,9 +1768,10 @@ def main():
     debug = False
     nickname = None
     ssl_cert = None
-    
+    log_file = '/var/log/telepaatti'
+
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","debug","ssl=",])
+        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","debug","ssl=","log=",])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -1794,8 +1798,17 @@ def main():
             debug = True
         if o == "--ssl":
             ssl_cert = a
+        if o == "--log":
+            print "log file set"
+            log_file = a
 
+    f = open (log_file, 'a')
+    with daemon.DaemonContext(stdout = f, stderr = f):
+        daemon_main(server, port, muc_server, nickname, ssl_cert)
+
+def daemon_main(server, port, muc_server, nickname, ssl_cert):
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    service.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     service.bind(("", port))
     service.listen(1)
 
@@ -1807,7 +1820,7 @@ def main():
             try:
                 clientsocket = ssl.wrap_socket(clientsocket, None, ssl_cert, True, ssl.CERT_NONE, ssl.PROTOCOL_SSLv23)
             except:
-                print 'Failed SSL handshake'
+                print 'Failed SSL handshake:', sys.exc_info()[0], " - ", sys.exc_info()[1]
                 try:
                     clientsocket.shutdown(socket.SHUT_RDWR)
                 except socket.error:
@@ -1818,6 +1831,4 @@ def main():
         ct.start()
 
 if __name__ == "__main__":
-    f = open ('/var/log/telepaatti', 'a')
-    with daemon.DaemonContext(stdout = f, stderr = f):
-        main()
+    main()
