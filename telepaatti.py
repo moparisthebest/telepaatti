@@ -318,7 +318,7 @@ class ClientThread(Thread):
         snick = self.nickname
         lines = list()
         lines.append(':%s JOIN :#%s'% (snick, room_jid))
-        lines.append(':localhost MODE #%s' % room_jid)
+        lines.append(':%s MODE #%s' % (self.server, room_jid))
         
         for jid in self.mucs[room_jid].iterkeys():
             nick = snick
@@ -328,8 +328,8 @@ class ClientThread(Thread):
                 nick = "@%s" % nick
             elif self.mucs[room_jid][jid]['role'] == 'participant':
                 nick = "+%s" % nick
-            lines.append(':localhost 353 %s = #%s :%s' % (snick, room_jid, nick))
-        lines.append(':localhost 366 %s #%s :End of /NAMES list.'% (snick, room_jid))
+            lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, room_jid, nick))
+        lines.append(':%s 366 %s #%s :End of /NAMES list.'% (self.server, snick, room_jid))
         while lines:
             msg = lines.pop(0)
             self.sendToIRC(msg)
@@ -405,17 +405,17 @@ class ClientThread(Thread):
         lines = list()
         room = 'roster'
         lines.append(':%s JOIN :#%s'% (snick, room))
-        lines.append(':localhost 332 %s #%s :Roster Channel. Telepaatti is tracking here your roster changes. Type Help for help!' %
-                     (snick, room))
-        lines.append(':localhost 333 %s #%s telepaatti 000000001' % (snick, room))
-        lines.append(':localhost MODE #%s' % room)
-        lines.append(':localhost 353 %s = #%s :%s' % (snick, room, snick))
+        lines.append(':%s 332 %s #%s :Roster Channel. Telepaatti is tracking here your roster changes. Type Help for help!' %
+                     (self.server, snick, room))
+        lines.append(':%s 333 %s #%s telepaatti 000000001' % (self.server, snick, room))
+        lines.append(':%s MODE #%s' % (self.server, room))
+        lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, room, snick))
 
         for jid in self.mucs[room].iterkeys():
             nick = self.makeNickFromJID(jid, False)
             if not (jid.getResource() == self.nickname):
-                lines.append(':localhost 353 %s = #%s :%s' % (snick, room, nick))
-        lines.append(':localhost 366 %s #%s :End of /NAMES list.'% (snick, room))
+                lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, room, nick))
+        lines.append(':%s 366 %s #%s :End of /NAMES list.'% (self.server, snick, room))
 
         while lines:
             msg = lines.pop(0)
@@ -511,9 +511,9 @@ class ClientThread(Thread):
         @param args: arguments of the mode
         """
         nick = self.nickname
-        msg = ':localhost 324 %s #%s %s' % (nick, room_jid, args)
+        msg = ':%s 324 %s #%s %s' % (self.server, nick, room_jid, args)
         self.sendToIRC(msg)
-        msg = ':localhost 329 %s #%s %s' % (nick, room_jid, '1031538353')
+        msg = ':%s 329 %s #%s %s' % (self.server, nick, room_jid, '1031538353')
         self.sendToIRC(msg)
 
     def ircCommandMODEMUCBANLIST(self, room_jid):
@@ -523,7 +523,7 @@ class ClientThread(Thread):
         @param room_jid: JID of the room
         """
         nick = self.nickname
-        msg = ':localhost 368 %s #%s :End of Channel Ban List' % (nick, room_jid)
+        msg = ':%s 368 %s #%s :End of Channel Ban List' % (self.server, nick, room_jid)
         self.sendToIRC(msg)
 
     def ircCommandMODEMUCUSER(self, giver, taker, args):
@@ -568,9 +568,9 @@ class ClientThread(Thread):
         elif ircerror == -1:
             msg = 'ERROR :Telepaatti error %s' % message
         elif ircerror == 403:
-            msg = ':localhost 403 %s localhost :That channel doesn\'t exist' % self.nickname
+            msg = ':%s 403 %s %s :That channel doesn\'t exist' % (self.server, self.nickname, self.server)
         elif ircerror == 464:
-            msg = ':localhost 464 :Password incorrect'
+            msg = ':%s 464 :Password incorrect' % (self.server)
         self.sendToIRC(msg)
 
     def ircCommandERRORMUC(self, number, errormess, room):
@@ -611,8 +611,8 @@ class ClientThread(Thread):
         else:
             text = 'No text'
 
-        msg = ':localhost %s %s #%s :%s' % (
-            number, self.nickname, room, text)
+        msg = ':%s %s %s #%s :%s' % (
+            self.server, number, self.nickname, room, text)
         self.sendToIRC(msg)
         self.ircCommandERROR(errormess)
 
@@ -626,17 +626,19 @@ class ClientThread(Thread):
         """
         for user in users:
             nick = self.makeNickFromJID(user, True),
-            msg = ':localhost 352 %s #%s %s %s localhost %s %s :0 %s' % (
+            msg = ':%s 352 %s #%s %s %s %s %s %s :0 %s' % (
+                self.server,
                 self.nickname,
                 room_jid,
                 user.getResource(),
                 user.getDomain(),
+                self.server,
                 nick,
                 self.ircGetStatus(user, room_jid),
                 self.fixNick(user.getResource()))
             self.sendToIRC(msg)
 
-        msg = ':localhost 315 %s #%s :End of /WHO list.' % (self.nickname, room_jid)
+        msg = ':%s 315 %s #%s :End of /WHO list.' % (self.server, self.nickname, room_jid)
         self.sendToIRC(msg)
 
     def ircCommandWHOIS(self, jid):
@@ -647,20 +649,23 @@ class ClientThread(Thread):
         """
         nick = self.makeNickFromJID(jid, self.mucs.has_key(jid.getStripped()))
         lines = [
-            ':localhost 311 %s %s %s %s * : %s' % (self.nickname,
-                                                   nick,
-                                                   jid.getNode(),
-                                                   jid.getDomain(),
-                                                   nick),
-            ':localhost 312 %s %s localhost : XMPP telepaatti' % (self.nickname, nick),
-            ':localhost 318 %s %s :End of /WHOIS list.' % (self.nickname, nick)]
+            ':%s 311 %s %s %s %s * : %s' % (
+                self.server,
+                self.nickname,
+                nick,
+                jid.getNode(),
+                jid.getDomain(),
+                nick),
+            ':%s 312 %s %s %s : XMPP telepaatti' % (self.server, self.nickname, nick, self.server),
+            ':%s 318 %s %s :End of /WHOIS list.' % (self.server, self.nickname, nick)]
         while lines:
             self.sendToIRC(lines.pop(0))
 
     def ircCommandUNAWAY(self):
         """Convert XMPP status to IRC away"""
         nick = self.nickname
-        msg = ':localhost 305 %s :%s' % (
+        msg = ':%s 305 %s :%s' % (
+            self.server,
             nick,
             'You are no longer marked as being away')
         self.sendToIRC(msg)
@@ -668,7 +673,8 @@ class ClientThread(Thread):
     def ircCommandNOWAWAY(self):
         """Convert XMPP status to IRC not away"""
         nick = self.nickname
-        msg = ':localhost 306 %s :%s' % (
+        msg = ':%s 306 %s :%s' % (
+            self.server,
             nick,
             'You have been marked as being away')
         self.sendToIRC(msg)
@@ -928,12 +934,15 @@ class ClientThread(Thread):
                  "NOTICE AUTH :*** Found your hostname, welcome back",
                  "NOTICE AUTH :*** Checking ident",
                  "NOTICE AUTH :*** No identd (auth) response",
-                 ":localhost 001 %s :Welcome to Telepaatti, IRC to XMPP gateway" %
-                 nick,
-                 ":localhost 002 %s :Your host is localhost [localhost port %s] running version telepaatti-%s" % (
-                nick,
-                self.port,
-                TELEPAATTIVERSION)
+                 ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway" %
+                     (self.server, nick),
+                 ":%s 002 %s :Your host is %s [%s port %s] running version telepaatti-%s" % (
+                     self.server,
+                     nick,
+                     self.server,
+                     self.server,
+                     self.port,
+                     TELEPAATTIVERSION)
                  ]
         while lines:
             self.sendToIRC(lines.pop(0))
@@ -969,7 +978,7 @@ class ClientThread(Thread):
                                 self.xmppCommandMUCMODE(muc)
                 else:
                     self.pingCounter = self.pingCounter + 1
-                self.sendToIRC('PONG localhost')
+                self.sendToIRC('PONG %s' % (self.server))
             if data:
                 for line in data.splitlines():
                     self.commandHandler(line)
