@@ -318,7 +318,7 @@ class ClientThread(Thread):
         snick = self.nickname
         lines = list()
         lines.append(':%s JOIN :#%s'% (snick, room_jid))
-        lines.append(':%s MODE #%s' % (self.server, room_jid))
+        lines.append(':%s MODE #%s +n' % (self.server, room_jid))
         
         for jid in self.mucs[room_jid].iterkeys():
             nick = snick
@@ -408,7 +408,7 @@ class ClientThread(Thread):
         lines.append(':%s 332 %s #%s :Roster Channel. Telepaatti is tracking here your roster changes. Type Help for help!' %
                      (self.server, snick, room))
         lines.append(':%s 333 %s #%s telepaatti 000000001' % (self.server, snick, room))
-        lines.append(':%s MODE #%s' % (self.server, room))
+        lines.append(':%s MODE #%s +n' % (self.server, room))
         lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, room, snick))
 
         for jid in self.mucs[room].iterkeys():
