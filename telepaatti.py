@@ -30,6 +30,8 @@ from threading import *
 from xmpp import *
 import getopt, sys
 import daemon
+import logging
+import logging.handlers
 import urllib
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
@@ -66,7 +68,7 @@ class JabberThread(Thread):
 
 class ClientThread(Thread):
     """ ClientThread class for handling IRC and Jabber connections."""
-    def __init__(self,socket, port, server, muc_server, debug=False):
+    def __init__(self,socket, port, server, muc_server):
         """Constructor for ClientThread class
 
         @type socket: socket
@@ -108,8 +110,8 @@ class ClientThread(Thread):
 
         self.xmppSem = BoundedSemaphore(value=1)
 
-        # if set to True debug messages are printed to sdt out
-        self.debug = debug
+        self.logger = logging.getLogger("logger")
+        self.logger.addHandler(logging.handlers.SysLogHandler(address = '/var/run/log'))
 
     def printError(self, msg):
         """Error message printing for std out
@@ -117,9 +119,7 @@ class ClientThread(Thread):
         @type msg: string
         @param msg: error message
         """
-        dt = "%s" % datetime.datetime.now()
-        dt = dt[:-7]
-        print "ERROR: [%s] %s" % (dt, msg)
+        self.logger.error(msg)
 
     def printDebug(self, msg):
         """print Debug message to std out
@@ -127,11 +127,7 @@ class ClientThread(Thread):
         @type msg: string
         @param msg: debug message
         """
-        if not self.debug:
-            return
-        dt = "%s" % datetime.datetime.now()
-        dt = dt[:-7]
-        print "DEBUG [%s] %s" % (dt, msg)
+        self.logger.debug(msg)
 
     def getMucs(self):
         """Return joined MUC without roster MUC
@@ -1766,21 +1762,22 @@ def usage():
     print "-p, --port\t port which telepaatti listens"
     print "-s, --server\t Jabber/XMPP server to which the connection should be made"
     print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
-    print "-d, --debug\t turn debug messages on"
     print "    --ssl\t SSL certificate. Enables ssl when provided"
+    print "    --dh\t Diffie Hellman parameter file for SSL."
     print "    --log\t telepaatti log file"
 
 def main():
     port = 6667
     server = ''
     muc_server = None
-    debug = False
     nickname = None
     ssl_cert = None
+    dh_param = None
+    daemonize = False
     log_file = '/var/log/telepaatti'
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","debug","ssl=","log=",])
+        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","daemonize","ssl=","dh="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -1802,41 +1799,55 @@ def main():
             server = a
         if o in ("-m", "--muc-server"):
             muc_server = a
-        if o in ("-d", "--debug"):
-            print "debug messages on"
-            debug = True
+        if o in ("-d", "--daemonize"):
+            daemonize = True
         if o == "--ssl":
             ssl_cert = a
-        if o == "--log":
-            print "log file set"
-            log_file = a
+        if o == "--dh":
+            dh_param = a
+    if daemonize:
+        with daemon.DaemonContext():
+            daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param)
+    else:
+        daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param)
 
-    f = open (log_file, 'a')
-    with daemon.DaemonContext(stdout = f, stderr = f):
-        daemon_main(server, port, muc_server, nickname, ssl_cert)
-
-def daemon_main(server, port, muc_server, nickname, ssl_cert):
+def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     service.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     service.bind(("", port))
     service.listen(1)
 
-    print "listening on port", port
+    main_logger = logging.getLogger("main_logger");
+    main_logger.addHandler(logging.handlers.SysLogHandler(address = '/var/run/log'))
+
+    main_logger.info("listening on port %s" % (port))
+
+    ssl_ctx = None
+    if ssl_cert is not None:
+        main_logger.info("Using ssl certificate %s" % (ssl_cert))
+        ssl_ctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+        ssl_ctx.set_ciphers("ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK")
+        if dh_param is not None:
+            main_logger.info("Using DH parameter %s" % (dh_param))
+            ssl_ctx.load_dh_params(dh_param)
+        ssl_ctx.load_cert_chain(ssl_cert)
+
+
 
     while (True):
         (clientsocket, address ) = service.accept()
-        if ssl_cert is not None:
+        if ssl_ctx is not None:
             try:
-                clientsocket = ssl.wrap_socket(clientsocket, None, ssl_cert, True, ssl.CERT_NONE, ssl.PROTOCOL_SSLv23)
+                clientsocket = ssl_ctx.wrap_socket(clientsocket, server_side = True)
             except:
-                print 'Failed SSL handshake:', sys.exc_info()[0], " - ", sys.exc_info()[1]
+                main_logger.error('Failed SSL handshake: %s - %s' % (sys.exc_info()[0], sys.exc_info()[1]))
                 try:
                     clientsocket.shutdown(socket.SHUT_RDWR)
                 except socket.error:
-                    print 'Failed socket shutdown'
+                    main_logger.error('Failed socket shutdown')
                 clientsocket.close()
                 continue
-        ct = ClientThread(clientsocket, port, server, muc_server, debug)
+        ct = ClientThread(clientsocket, port, server, muc_server)
         ct.start()
 
 if __name__ == "__main__":
