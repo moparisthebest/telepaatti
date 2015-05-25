@@ -35,7 +35,7 @@ import logging.handlers
 import urllib
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
-TELEPAATTIVERSION = 1
+TELEPAATTIVERSION = 2.0
 
 class JabberThread(Thread):
     """Class for Jabber connection thread"""
@@ -112,6 +112,8 @@ class ClientThread(Thread):
 
         self.logger = logging.getLogger("logger")
         self.logger.addHandler(logging.handlers.SysLogHandler(address = '/var/run/log'))
+
+        self.startup_time = datetime.datetime.now().strftime("%c")
 
     def printError(self, msg):
         """Error message printing for std out
@@ -930,15 +932,17 @@ class ClientThread(Thread):
                  "NOTICE AUTH :*** Found your hostname, welcome back",
                  "NOTICE AUTH :*** Checking ident",
                  "NOTICE AUTH :*** No identd (auth) response",
-                 ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway" %
-                     (self.server, nick),
+                 ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway %s!%s" %
+                     (self.server, nick, nick, self.makeHostFromJID(self.JID)),
                  ":%s 002 %s :Your host is %s [%s port %s] running version telepaatti-%s" % (
                      self.server,
                      nick,
                      self.server,
                      self.server,
                      self.port,
-                     TELEPAATTIVERSION)
+                     TELEPAATTIVERSION),
+                 ":%s 003 %s :This server was created %s" % (self.server, nick, self.startup_time),
+                 ":%s 004 %s :%s Telepaatti%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, TELEPAATTIVERSION)
                  ]
         while lines:
             self.sendToIRC(lines.pop(0))
