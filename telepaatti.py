@@ -1327,13 +1327,11 @@ class ClientThread(Thread):
             if len(arguments) == 2:
                 password = arguments[1]
 
-            if room.find('@') < 1:
-                self.printDebug("Joining a room without full jid")
-                if (self.muc_server is None):
-                    self.ircCommandERRORMUC(404, 'No such MUC', room)
-                    return
-                room = "%s@%s" % (room, self.muc_server)
-            room = room.lower()
+            if room.find('@') > 0:
+                self.printDebug("Joining room with full jid unsupported")
+                return
+            room = "%s@%s" % (room, self.muc_server)
+            room = room.lower() # todo: is this valid?
             if room in self.mucs.keys(): # already in MUC
                 return
             self.printDebug("Joining room: %s" % JID(room))
