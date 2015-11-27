@@ -33,6 +33,8 @@ import daemon
 import logging
 import logging.handlers
 import urllib
+import string
+import random
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
 TELEPAATTIVERSION = 2.0
@@ -78,7 +80,7 @@ class ClientThread(Thread):
         self.port = port
         self.server = server
         self.muc_server = muc_server
-        self.JID = None
+
         self.passwd= None
 
         self.nickname = None
@@ -585,8 +587,7 @@ class ClientThread(Thread):
         @type jid: string
         @param jid: Jabber id of the MUC
         """
-        iq = protocol.Iq(frm=self.JID,
-                         to=jid,
+        iq = protocol.Iq(to=jid,
                          queryNS=NS_DISCO_ITEMS,
                          typ = 'get')
         iq.setID('disco4')
@@ -695,6 +696,8 @@ class ClientThread(Thread):
         pass
 
     def run(self):
+        self.component.registerJid(self)
+
         while self.connected and self.nickname is None:
             try:
                 data = self.socket.recv(4096)
@@ -707,26 +710,26 @@ class ClientThread(Thread):
             else:
                 self.connected = False
 
-
-        nick = self.fixNick(self.nickname)
-        lines = ["NOTICE AUTH :*** Looking up your hostname...",
-                 "NOTICE AUTH :*** Found your hostname, welcome back",
-                 "NOTICE AUTH :*** Checking ident",
-                 "NOTICE AUTH :*** No identd (auth) response",
-                 ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway %s!%s" %
-                     (self.server, nick, nick, self.makeHostFromJID(self.JID)),
-                 ":%s 002 %s :Your host is %s [%s port %s] running version telepaatti-%s" % (
-                     self.server,
-                     nick,
-                     self.server,
-                     self.server,
-                     self.port,
-                     TELEPAATTIVERSION),
-                 ":%s 003 %s :This server was created %s" % (self.server, nick, self.component.startup_time),
-                 ":%s 004 %s :%s Telepaatti%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, TELEPAATTIVERSION)
-                 ]
-        while lines:
-            self.sendToIRC(lines.pop(0))
+        if self.connected:
+            nick = self.nickname
+            lines = ["NOTICE AUTH :*** Looking up your hostname...",
+                     "NOTICE AUTH :*** Found your hostname, welcome back",
+                     "NOTICE AUTH :*** Checking ident",
+                     "NOTICE AUTH :*** No identd (auth) response",
+                     ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway %s!%s" %
+                         (self.server, nick, nick, self.makeHostFromJID(self.JID)),
+                     ":%s 002 %s :Your host is %s [%s port %s] running version telepaatti-%s" % (
+                         self.server,
+                         nick,
+                         self.server,
+                         self.server,
+                         self.port,
+                         TELEPAATTIVERSION),
+                     ":%s 003 %s :This server was created %s" % (self.server, nick, self.component.startup_time),
+                     ":%s 004 %s :%s Telepaatti%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, TELEPAATTIVERSION)
+                     ]
+            while lines:
+                self.sendToIRC(lines.pop(0))
 
         """Here is this threads main functionality. Jabber-thread is started
         and polling of socket for IRC-messages is in here."""
@@ -754,15 +757,22 @@ class ClientThread(Thread):
                             self.roomPingQueue[muc] = ''
                             self.xmppCommandMUCMODE(muc)
                 else:
-                    self.pingCounter = self.pingCounter + 1
+                    self.pingCounter += 1
                 self.sendToIRC('PONG %s' % (self.server))
             if data:
                 for line in data.splitlines():
                     self.commandHandler(line)
             else:
                 self.connected = False
-        if not jt.connected:
+        if jt.connected:
+            # leave all rooms
+            for room in self.mucs.keys():
+                self.sendToXMPP(Presence(to='%s/%s' % (room, self.nickname),
+                                     typ='unavailable',
+                                     status=''))
+        else:
             self.ircCommandNOTICE('XMPP server disconnected, shutting down Telepaatti.')
+        self.component.unregisterJid(self)
         try:
             self.socket.shutdown(socket.SHUT_RDWR)
         except socket.error:
@@ -1097,7 +1107,6 @@ class ClientThread(Thread):
             if ns.startswith(NS_MUC):
                 MUC = True
 
-        # todo: remove all the non-muc code
         if not MUC:
             self.printDebug('non-muc presence somehow? investigate...')
             return
@@ -1292,20 +1301,13 @@ class ClientThread(Thread):
         if (MUC):
             arguments = arguments[1:]
             
-        if self.JID is None:
+        if self.nickname is None:
             if command == 'NICK':
                 nick = ''
                 if arguments[0] == ':':
                     nick = arguments[1:]
                 else:
                     nick = arguments
-                bare_jid = "%s@%s" %(nick, self.server)
-                full_jid = "%s@%s/%s" %(nick, self.server, 'telepaatti')
-                self.JID = JID(full_jid)
-                # todo: handle changing jids
-                self.printDebug("adding jid to clients: (full: %s) (bare: %s)" % (full_jid, bare_jid))
-                self.component.clients[full_jid] = self
-                self.component.clients[bare_jid] = self
 
                 self.nickname = self.fixNick(nick)
                 
@@ -1357,7 +1359,7 @@ class ClientThread(Thread):
                 room = JID(arguments.strip())
             if room not in self.mucs.keys(): # not in room
                 return
-            self.sendToXMPP(Presence(to='%s/%s' % (room, self.newnick),
+            self.sendToXMPP(Presence(to='%s/%s' % (room, self.nickname),
                                      typ='unavailable',
                                      status=text))
 
@@ -1563,6 +1565,30 @@ class XmppComponent():
         self.jt = JabberThread(client)
         self.jt.start()
 
+    # https://tools.ietf.org/html/rfc6122#section-2.3
+    def randomLocalpart(self, size=20, chars=string.ascii_lowercase + string.digits):
+        return ''.join(random.choice(chars) for _ in range(size))
+
+    def registerJid(self, irc_client):
+        nick = self.randomLocalpart()
+        bare_jid = "%s@%s" %(nick, irc_client.server)
+        #full_jid = "%s@%s/%s" %(nick, irc_client.server, 'telepaatti')
+        while bare_jid in self.clients:
+            # generate new random until we come across an unused one
+            nick = self.randomLocalpart()
+            bare_jid = "%s@%s" %(nick, irc_client.server)
+
+        irc_client.bare_jid = bare_jid
+        irc_client.JID = JID(bare_jid)
+        #irc_client.printDebug("adding jid to clients: (full: %s) (bare: %s)" % (full_jid, bare_jid))
+        irc_client.printDebug("adding jid to clients: %s" % (bare_jid))
+        #self.clients[full_jid] = self
+        self.clients[bare_jid] = irc_client
+
+    def unregisterJid(self, irc_client):
+        if irc_client.bare_jid in self.clients:
+            del (self.clients[irc_client.bare_jid])
+
     def send(self, msg):
         """Sends message XMPP server
 
@@ -1574,11 +1600,10 @@ class XmppComponent():
         self.xmppSem.release()
 
     def messageHandler(self, sess, mess):
-        print "in messageHandler"
         self.logger.info("in messageHandler")
         try:
             jid = mess.getTo()
-            self.logger.info("jid %s" % (jid))
+            self.logger.info("jid %s, clients: %s" % (jid, self.clients))
             self.clients[jid].messageHandler(sess, mess)
         except:
             self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
@@ -1586,22 +1611,20 @@ class XmppComponent():
 
 
     def presenceHandler(self, sess, mess):
-        print "in presenceHandler"
         self.logger.info("in presenceHandler")
         try:
             jid = mess.getTo()
-            self.logger.info("jid %s" % (jid))
+            self.logger.info("jid %s, clients: %s" % (jid, self.clients))
             self.clients[jid].presenceHandler(sess, mess)
         except:
             self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
             pass
 
     def iqHandler(self, sess, mess):
-        print "in iqHandler"
         self.logger.info("in iqHandler")
         try:
             jid = mess.getTo()
-            self.logger.info("jid %s" % (jid))
+            self.logger.info("jid %s, clients: %s" % (jid, self.clients))
             self.clients[jid].iqHandler(sess, mess)
         except:
             self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
