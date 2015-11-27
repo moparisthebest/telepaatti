@@ -50,14 +50,6 @@ class JabberThread(Thread):
         self.client = client
         self.connected = True
 
-    def process(self):
-        """Starts the xmpp client process"""
-        try:
-            self.client.Process(1)
-        except:
-            return False
-        return True
-
     def run(self):
         """When xmpp client is connected runs the client process """
         #return
@@ -69,7 +61,7 @@ class JabberThread(Thread):
 
 class ClientThread(Thread):
     """ ClientThread class for handling IRC and Jabber connections."""
-    def __init__(self,socket, port, server, muc_server, client, main_logger):
+    def __init__(self,socket, port, server, muc_server, component):
         """Constructor for ClientThread class
 
         @type socket: socket
@@ -79,12 +71,13 @@ class ClientThread(Thread):
         @param port: port of the connection
         """
         Thread.__init__(self)
-        self.client = client
+
+        self.component = component
+
         self.socket = socket
         self.port = port
         self.server = server
         self.muc_server = muc_server
-        #self.client = None
         self.JID = None
         self.passwd= None
 
@@ -106,23 +99,13 @@ class ClientThread(Thread):
         self.changingNick = {}
         self.pingCounter = 0
 
-        self.xmppSem = BoundedSemaphore(value=1)
-
-        #self.logger = logging.getLogger("logger")
-        #self.logger.addHandler(logging.handlers.SysLogHandler(address = '/var/run/log'))
-        #self.logger.addHandler(logging.StreamHandler())
-        #self.logger.setLevel(10)
-        self.logger = main_logger
-
-        self.startup_time = datetime.datetime.now().strftime("%c")
-
     def printError(self, msg):
         """Error message printing for std out
 
         @type msg: string
         @param msg: error message
         """
-        self.logger.error(msg)
+        self.component.logger.error(msg)
 
     def printDebug(self, msg):
         """print Debug message to std out
@@ -130,7 +113,7 @@ class ClientThread(Thread):
         @type msg: string
         @param msg: debug message
         """
-        self.logger.debug(msg)
+        self.component.logger.debug(msg)
 
     def getMucs(self):
         """Return joined MUC without roster MUC
@@ -246,10 +229,8 @@ class ClientThread(Thread):
         @type msg: string
         @param msg: message to send
         """
-        self.xmppSem.acquire()
         msg.setFrom(self.JID)
-        self.client.send(msg)
-        self.xmppSem.release()
+        self.component.send(msg)
 
     def ircGetStatus(self, jid, room_jid):
         """Get IRC status
@@ -741,7 +722,7 @@ class ClientThread(Thread):
                      self.server,
                      self.port,
                      TELEPAATTIVERSION),
-                 ":%s 003 %s :This server was created %s" % (self.server, nick, self.startup_time),
+                 ":%s 003 %s :This server was created %s" % (self.server, nick, self.component.startup_time),
                  ":%s 004 %s :%s Telepaatti%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, TELEPAATTIVERSION)
                  ]
         while lines:
@@ -749,8 +730,7 @@ class ClientThread(Thread):
 
         """Here is this threads main functionality. Jabber-thread is started
         and polling of socket for IRC-messages is in here."""
-        jt = JabberThread(self.client)
-        jt.start()
+        jt = self.component.jt
 
         while self.connected and jt.connected:
             try:
@@ -783,7 +763,6 @@ class ClientThread(Thread):
                 self.connected = False
         if not jt.connected:
             self.ircCommandNOTICE('XMPP server disconnected, shutting down Telepaatti.')
-        jt.connected = False
         try:
             self.socket.shutdown(socket.SHUT_RDWR)
         except socket.error:
@@ -1325,12 +1304,8 @@ class ClientThread(Thread):
                 self.JID = JID(full_jid)
                 # todo: handle changing jids
                 self.printDebug("adding jid to clients: (full: %s) (bare: %s)" % (full_jid, bare_jid))
-                clients[full_jid] = self
-                clients[bare_jid] = self
-
-                #self.client.RegisterHandler('message',self.messageHandler)
-                #self.client.RegisterHandler('presence',self.presenceHandler)
-                #self.client.RegisterHandler('iq',self.iqHandler)
+                self.component.clients[full_jid] = self
+                self.component.clients[bare_jid] = self
 
                 self.nickname = self.fixNick(nick)
                 
@@ -1569,45 +1544,68 @@ def main():
     else:
         daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param)
 
-main_logger = logging.getLogger("main_logger")
-clients = {}
+class XmppComponent():
+    """Class for Jabber connection thread"""
 
-def messageHandler(sess, mess):
-    print "in messageHandler"
-    main_logger.info("in messageHandler")
-    try:
-        jid = mess.getTo()
-        main_logger.info("jid %s" % (jid))
-        main_logger.info("clients %s" % (clients))
-        clients[jid].messageHandler(sess, mess)
-    except:
-        main_logger.error("Unexpected error: %s" % sys.exc_info()[0])
-        pass
+    def __init__(self, client, logger):
+        self.client = client
+        self.logger = logger
+        self.clients = {}
+
+        self.xmppSem = BoundedSemaphore(value=1)
+
+        self.startup_time = datetime.datetime.now().strftime("%c")
+
+        client.RegisterHandler('message', self.messageHandler)
+        client.RegisterHandler('presence', self.presenceHandler)
+        client.RegisterHandler('iq', self.iqHandler)
+
+        self.jt = JabberThread(client)
+        self.jt.start()
+
+    def send(self, msg):
+        """Sends message XMPP server
+
+        @type msg: string
+        @param msg: message to send
+        """
+        self.xmppSem.acquire()
+        self.client.send(msg)
+        self.xmppSem.release()
+
+    def messageHandler(self, sess, mess):
+        print "in messageHandler"
+        self.logger.info("in messageHandler")
+        try:
+            jid = mess.getTo()
+            self.logger.info("jid %s" % (jid))
+            self.clients[jid].messageHandler(sess, mess)
+        except:
+            self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
+            pass
 
 
-def presenceHandler(sess, mess):
-    print "in presenceHandler"
-    main_logger.info("in presenceHandler")
-    try:
-        jid = mess.getTo()
-        main_logger.info("jid %s" % (jid))
-        main_logger.info("clients %s" % (clients))
-        clients[jid].presenceHandler(sess, mess)
-    except:
-        main_logger.error("Unexpected error: %s" % sys.exc_info()[0])
-        pass
+    def presenceHandler(self, sess, mess):
+        print "in presenceHandler"
+        self.logger.info("in presenceHandler")
+        try:
+            jid = mess.getTo()
+            self.logger.info("jid %s" % (jid))
+            self.clients[jid].presenceHandler(sess, mess)
+        except:
+            self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
+            pass
 
-def iqHandler(sess, mess):
-    print "in iqHandler"
-    main_logger.info("in iqHandler")
-    try:
-        jid = mess.getTo()
-        main_logger.info("jid %s" % (jid))
-        main_logger.info("clients %s" % (clients))
-        clients[jid].iqHandler(sess, mess)
-    except:
-        main_logger.error("Unexpected error: %s" % sys.exc_info()[0])
-        pass
+    def iqHandler(self, sess, mess):
+        print "in iqHandler"
+        self.logger.info("in iqHandler")
+        try:
+            jid = mess.getTo()
+            self.logger.info("jid %s" % (jid))
+            self.clients[jid].iqHandler(sess, mess)
+        except:
+            self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
+            pass
 
 def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1615,7 +1613,7 @@ def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
     service.bind(("", port))
     service.listen(1)
 
-    #main_logger = logging.getLogger("main_logger")
+    main_logger = logging.getLogger("main_logger")
     #main_logger.addHandler(logging.handlers.SysLogHandler(address = '/var/run/log'))
     main_logger.addHandler(logging.StreamHandler())
     main_logger.setLevel(10)
@@ -1636,13 +1634,12 @@ def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
 
     #client.connect(proxy={})
     client.connect(('192.168.1.3', 5347))
-    client.RegisterHandler('message',messageHandler)
-    client.RegisterHandler('presence',presenceHandler)
-    client.RegisterHandler('iq',iqHandler)
 
     if not client.auth('irc.moparisthebest.com', 'irc'):
         main_logger.error('auth failed')
         return
+
+    component = XmppComponent(client, main_logger)
 
     while (True):
         (clientsocket, address ) = service.accept()
@@ -1657,7 +1654,7 @@ def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
                     main_logger.error('Failed socket shutdown')
                 clientsocket.close()
                 continue
-        ct = ClientThread(clientsocket, port, server, muc_server, client, main_logger)
+        ct = ClientThread(clientsocket, port, server, muc_server, component)
         ct.start()
 
 if __name__ == "__main__":
