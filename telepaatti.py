@@ -1,9 +1,10 @@
-#!/usr/local/bin/python
+#!/usr/bin/python
 """
 
 Telepaatti, IRC to Jabber/XMPP gateway.
 
 Copyright (C) 2007-2009 Petteri Klemola
+Copyright (C) 2015 moparisthebest
 
 Telepaatti is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License version 3 as
@@ -18,8 +19,6 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 02110-1301, USA.
-
-For more information about Telepaatti see http://23.fi/telepaatti
 """
 
 import socket
@@ -37,7 +36,7 @@ import string
 import random
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
-TELEPAATTIVERSION = 2.0
+TELEPAATTIVERSION = 3.0
 
 class JabberThread(Thread):
     """Class for Jabber connection thread"""
@@ -1559,24 +1558,29 @@ def usage():
     print "OPTIONS"
     print "-h, --help\t telepaatti help"
     print "-p, --port\t port which telepaatti listens"
-    print "-s, --server\t Jabber/XMPP server to which the connection should be made"
     print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
+    print "-s, --server\t Jabber/XMPP server to which the component connection should be made"
+    print "-P, --server-port\t Port to which the component connection should be made"
+    print "-c, --component-name\t Name of component"
+    print "-C, --component-pass\t Component password"
     print "    --ssl\t SSL certificate. Enables ssl when provided"
     print "    --dh\t Diffie Hellman parameter file for SSL."
     print "    --log\t telepaatti log file"
 
 def main():
     port = 6667
-    server = ''
+    server = '127.0.0.1'
+    server_port = 5347
     muc_server = None
-    nickname = None
+    component_name = None
+    component_pass = None
     ssl_cert = None
     dh_param = None
     daemonize = False
     log_file = '/var/log/telepaatti'
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "s:m:p:h:d", ["server=","muc-server=","port=","help","daemonize","ssl=","dh="])
+        opts, args = getopt.getopt(sys.argv[1:], "s:P:m:p:h:d:c:C:", ["server=","server-port=","muc-server=","port=","help","daemonize","ssl=","dh=","component-name=","component-pass="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -1594,10 +1598,20 @@ def main():
             except:
                 print "port should be an integer"
                 sys.exit()
+        if o in ("-P", "--server-port"):
+            try:
+                server_port = int(a)
+            except:
+                print "server-port should be an integer"
+                sys.exit()
         if o in ("-s", "--server"):
             server = a
         if o in ("-m", "--muc-server"):
             muc_server = a
+        if o in ("-c", "--component-name"):
+            component_name = a
+        if o in ("-C", "--component-pass"):
+            component_pass = a
         if o in ("-d", "--daemonize"):
             daemonize = True
         if o == "--ssl":
@@ -1606,9 +1620,9 @@ def main():
             dh_param = a
     if daemonize:
         with daemon.DaemonContext():
-            daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param)
+            daemon_main(server, server_port, port, muc_server, component_name, component_pass, ssl_cert, dh_param)
     else:
-        daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param)
+        daemon_main(server, server_port, port, muc_server, component_name, component_pass, ssl_cert, dh_param)
 
 class XmppComponent():
     """Class for Jabber connection thread"""
@@ -1694,7 +1708,7 @@ class XmppComponent():
             self.logger.error("Unexpected error: %s" % sys.exc_info()[0])
             pass
 
-def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
+def daemon_main(server, server_port, port, muc_server, component_name, component_pass, ssl_cert, dh_param):
     service = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     service.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     service.bind(("", port))
@@ -1717,13 +1731,13 @@ def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
             ssl_ctx.load_dh_params(dh_param)
         ssl_ctx.load_cert_chain(ssl_cert)
 
-    client = Component('irc.moparisthebest.com', 5347)
+    client = Component(component_name, server_port)
 
     #client.connect(proxy={})
-    client.connect(('192.168.1.3', 5347))
+    client.connect((server, server_port))
 
-    if not client.auth('irc.moparisthebest.com', 'irc'):
-        main_logger.error('auth failed')
+    if not client.auth(component_name, component_pass):
+        main_logger.error('auth failed component: %s pass: %s' % (component_name, component_pass))
         return
 
     component = XmppComponent(client, main_logger)
@@ -1741,7 +1755,7 @@ def daemon_main(server, port, muc_server, nickname, ssl_cert, dh_param):
                     main_logger.error('Failed socket shutdown')
                 clientsocket.close()
                 continue
-        ct = ClientThread(clientsocket, port, server, muc_server, component)
+        ct = ClientThread(clientsocket, port, component_name, muc_server, component)
         ct.start()
 
 if __name__ == "__main__":
