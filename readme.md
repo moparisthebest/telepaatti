@@ -1,8 +1,9 @@
-telepaatti
+xmpp-ircd
 ----------
 
-This is a [fork](https://github.com/moparisthebest/telepaatti) of a [fork](https://github.com/julien-picalausa/telepaatti) of a [fork](https://github.com/davux/telepaatti)
-of [telepaatti](http://23.fi/telepaatti/), which was originally written as a way for one user to connect to xmpp from their IRC client.
+This is a [fork](https://github.com/moparisthebest/xmpp-ircd) of a [fork](https://github.com/julien-picalausa/telepaatti)
+of a [fork](https://github.com/davux/telepaatti) of [telepaatti](http://23.fi/telepaatti/), which was originally written
+as a way for one user to connect to a XMPP server from their IRC client.
 
 This particular fork aims to be ran as an IRC server connected to a single XMPP MUC as a standard XMPP component.  This
 will hopefully allow IRC server operators to migrate to hosting a real XMPP MUC with minimal headache or complaining from
@@ -11,7 +12,7 @@ hardcore IRC users, and also allow XMPP MUC operators to easily add IRC support.
 Usage
 -----
 
-    ./telepaatti.py --muc-server=chat.example.com --component-name=irc.example.com --component-pass=irc
+    ./xmpp-ircd.py --muc-server=chat.example.com --component-name=irc.example.com --component-pass=irc
 
 Will connect to 127.0.0.1:5347 and serve the MUC chat.example.com over IRC on port 6667.
 

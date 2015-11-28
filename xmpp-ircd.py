@@ -1,16 +1,17 @@
 #!/usr/bin/python
 """
 
-Telepaatti, IRC to Jabber/XMPP gateway.
+xmpp-ircd, IRC to Jabber/XMPP gateway.
+forked from Telepaatti
 
 Copyright (C) 2007-2009 Petteri Klemola
 Copyright (C) 2015 moparisthebest
 
-Telepaatti is free software; you can redistribute it and/or modify it
+xmpp-ircd is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License version 3 as
 published by the Free Software Foundation.
 
-Telepaatti is distributed in the hope that it will be useful, but
+xmpp-ircd is distributed in the hope that it will be useful, but
 WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 General Public License for more details.
@@ -36,7 +37,7 @@ import string
 import random
 
 STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
-TELEPAATTIVERSION = 3.0
+XMPPIRCDVERSION = 3.0
 
 class JabberThread(Thread):
     """Class for Jabber connection thread"""
@@ -465,7 +466,7 @@ class ClientThread(Thread):
         if ircerror == 0:
             msg = 'ERROR :XMPP ERROR %s' % message
         elif ircerror == -1:
-            msg = 'ERROR :Telepaatti error %s' % message
+            msg = 'ERROR :xmpp-ircd error %s' % message
         elif ircerror == 403:
             msg = ':%s 403 %s %s :That channel doesn\'t exist' % (self.server, self.nickname, self.server)
         elif ircerror == 464:
@@ -556,7 +557,7 @@ class ClientThread(Thread):
                 jid.getNode(),
                 jid.getDomain(),
                 nick),
-            ':%s 312 %s %s %s : XMPP telepaatti' % (self.server, self.nickname, nick, self.server),
+            ':%s 312 %s %s %s : XMPP xmpp-ircd' % (self.server, self.nickname, nick, self.server),
             ':%s 318 %s %s :End of /WHOIS list.' % (self.server, self.nickname, nick)]
         while lines:
             self.sendToIRC(lines.pop(0))
@@ -765,17 +766,17 @@ class ClientThread(Thread):
                      "NOTICE AUTH :*** Found your hostname, welcome back",
                      "NOTICE AUTH :*** Checking ident",
                      "NOTICE AUTH :*** No identd (auth) response",
-                     ":%s 001 %s :Welcome to Telepaatti, IRC to XMPP gateway %s!%s" %
+                     ":%s 001 %s :Welcome to xmpp-ircd, IRC to XMPP gateway %s!%s" %
                          (self.server, nick, nick, self.makeHostFromJID(self.JID)),
-                     ":%s 002 %s :Your host is %s [%s port %s] running version telepaatti-%s" % (
+                     ":%s 002 %s :Your host is %s [%s port %s] running version xmpp-ircd-%s" % (
                          self.server,
                          nick,
                          self.server,
                          self.server,
                          self.port,
-                         TELEPAATTIVERSION),
+                         XMPPIRCDVERSION),
                      ":%s 003 %s :This server was created %s" % (self.server, nick, self.component.startup_time),
-                     ":%s 004 %s :%s Telepaatti%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, TELEPAATTIVERSION)
+                     ":%s 004 %s :%s xmpp-ircd%s spmAFkPBaTuUovbn q" % (self.server, nick, self.server, XMPPIRCDVERSION)
                      ]
             while lines:
                 self.sendToIRC(lines.pop(0))
@@ -820,7 +821,7 @@ class ClientThread(Thread):
                                      typ='unavailable',
                                      status=''))
         else:
-            self.ircCommandNOTICE('XMPP server disconnected, shutting down Telepaatti.')
+            self.ircCommandNOTICE('XMPP server disconnected, shutting down xmpp-ircd.')
         self.component.unregisterJid(self)
         try:
             self.socket.shutdown(socket.SHUT_RDWR)
@@ -1554,10 +1555,10 @@ class ClientThread(Thread):
 
 def usage():
     """Usage function for showing commandline options """
-    print "Usage: telepaatti [OPTION]..."
+    print "Usage: xmpp-ircd [OPTION]..."
     print "OPTIONS"
-    print "-h, --help\t telepaatti help"
-    print "-p, --port\t port which telepaatti listens"
+    print "-h, --help\t help"
+    print "-p, --port\t port to listen for IRC connections on"
     print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
     print "-s, --server\t Jabber/XMPP server to which the component connection should be made"
     print "-P, --server-port\t Port to which the component connection should be made"
@@ -1565,7 +1566,7 @@ def usage():
     print "-C, --component-pass\t Component password"
     print "    --ssl\t SSL certificate. Enables ssl when provided"
     print "    --dh\t Diffie Hellman parameter file for SSL."
-    print "    --log\t telepaatti log file"
+    print "    --log\t log file"
 
 def main():
     port = 6667
@@ -1577,7 +1578,7 @@ def main():
     ssl_cert = None
     dh_param = None
     daemonize = False
-    log_file = '/var/log/telepaatti'
+    log_file = '/var/log/xmpp-ircd'
 
     try:
         opts, args = getopt.getopt(sys.argv[1:], "s:P:m:p:h:d:c:C:", ["server=","server-port=","muc-server=","port=","help","daemonize","ssl=","dh=","component-name=","component-pass="])
