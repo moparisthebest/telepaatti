@@ -562,6 +562,26 @@ class ClientThread(Thread):
         while lines:
             self.sendToIRC(lines.pop(0))
 
+    def ircCommandLIST(self, channels):
+        """Convert XMPP query to IRC channel list
+
+        @type channels: list
+        @param channels: list of channels
+        """
+        msg = ':%s 321 %s Channel :Users Name' % (self.server, self.nickname)
+        self.sendToIRC(msg)
+
+        for channel in channels:
+            # todo: implement # visible and topic
+            msg = ':%s 322 %s #%s 5 :Unknown' % (
+                self.server,
+                self.nickname,
+                channel)
+            self.sendToIRC(msg)
+
+        msg = ':%s 323 %s :End of /LIST' % (self.server, self.nickname)
+        self.sendToIRC(msg)
+
     def ircCommandUNAWAY(self):
         """Convert XMPP status to IRC away"""
         nick = self.nickname
@@ -611,7 +631,16 @@ class ClientThread(Thread):
         iq = protocol.Iq(to=jid,
                          queryNS=NS_DISCO_ITEMS,
                          typ = 'get')
-        iq.setID('disco4')
+        iq.setID('disco_muc_users')
+        self.sendToXMPP(iq)
+
+    def xmppCommandMUCROOMS(self):
+        """Send XMPP MUC rooms query
+        """
+        iq = protocol.Iq(to=self.muc_server,
+                         queryNS=NS_DISCO_ITEMS,
+                         typ = 'get')
+        iq.setID('disco_muc_rooms')
         self.sendToXMPP(iq)
 
     def xmppCommandSTATUS(self, show, status):
@@ -1029,7 +1058,7 @@ class ClientThread(Thread):
         if iq.getType() == 'error':
             # some fixing is needed
             self.ircCommandERROR('%s %s ' % (iq.getErrorCode(), iq.getErrorCode()))
-        elif iq.getID() == 'disco4': # muc users
+        elif iq.getID() == 'disco_muc_users':
             ch = iq.getQueryChildren()
             mucusers = list()
             for c in ch:
@@ -1039,6 +1068,15 @@ class ClientThread(Thread):
             if self.mucs.has_key(jid):
                 pass # we keep track of users else where
             self.ircCommandWHO(mucusers, jid)
+            return
+        elif iq.getID() == 'disco_muc_rooms':
+            ch = iq.getQueryChildren()
+            channels = list()
+            for c in ch:
+                name = c.getName()
+                if name == 'item':
+                    channels.append(self.fixChannel(c.getAttrs()['jid']))
+            self.ircCommandLIST(channels)
             return
         else:
             self.printDebug('UNKNOWN DISCO ITEM %s ' % jid)
@@ -1503,9 +1541,17 @@ class ClientThread(Thread):
                 if len(args) == 2:
                     status = args[1]
             self.xmppCommandSTATUS(show, status)
+
+        elif command == 'LIST':
+            # https://tools.ietf.org/html/rfc1459#section-4.2.6
+            # todo: handle list,of,channel,args?
+            self.xmppCommandMUCROOMS()
             
         elif command == 'QUIT':
             self.connected = False
+
+        else:
+            self.printError('ircline not handled: %s' % data)
 
 def usage():
     """Usage function for showing commandline options """
