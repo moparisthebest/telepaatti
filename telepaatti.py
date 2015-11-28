@@ -74,6 +74,8 @@ class ClientThread(Thread):
         """
         Thread.__init__(self)
 
+        self.fullRoomJid = False
+
         self.component = component
 
         self.socket = socket
@@ -141,6 +143,22 @@ class ClientThread(Thread):
         fixednick = fixednick.replace(':', '_')
         fixednick = fixednick.replace('@', '_')
         return fixednick
+
+    def fixChannel(self, channel):
+        # fix roomname
+        if self.fullRoomJid:
+            return channel
+        channel = unicode(channel)
+        return channel[0:channel.find('@')]
+
+    def fixChannelCommand(self, arguments):
+        # do the opposite of fixChannel() above, and strip #
+        if self.fullRoomJid:
+            return arguments[1:]
+        if ' ' in arguments:
+            return arguments[1:].replace(' ', "@%s " % (self.muc_server), 1)
+        else:
+            return "%s@%s" % (arguments[1:], self.muc_server)
 
     def makeHostFromJID(self, jid):
         """ builds the host part from a given jid
@@ -269,7 +287,7 @@ class ClientThread(Thread):
         msg = ':%s!%s JOIN :#%s' % (
             nick,
             self.makeHostFromJID(jid),
-            channel)
+            self.fixChannel(channel))
         self.sendToIRC(msg)
 
         role = self.mucs[channel][jid]['role']
@@ -289,8 +307,9 @@ class ClientThread(Thread):
         """
         snick = self.nickname
         lines = list()
-        lines.append(':%s JOIN :#%s'% (snick, room_jid))
-        lines.append(':%s MODE #%s +n' % (self.server, room_jid))
+        channel = self.fixChannel(room_jid)
+        lines.append(':%s JOIN :#%s'% (snick, channel))
+        lines.append(':%s MODE #%s +n' % (self.server, channel))
         
         for jid in self.mucs[room_jid].iterkeys():
             nick = snick
@@ -300,8 +319,8 @@ class ClientThread(Thread):
                 nick = "@%s" % nick
             elif self.mucs[room_jid][jid]['role'] == 'participant':
                 nick = "+%s" % nick
-            lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, room_jid, nick))
-        lines.append(':%s 366 %s #%s :End of /NAMES list.'% (self.server, snick, room_jid))
+            lines.append(':%s 353 %s = #%s :%s' % (self.server, snick, channel, nick))
+        lines.append(':%s 366 %s #%s :End of /NAMES list.'% (self.server, snick, channel))
         while lines:
             msg = lines.pop(0)
             self.sendToIRC(msg)
@@ -318,7 +337,7 @@ class ClientThread(Thread):
         msg = ':%s!%s PART #%s :%s' % (
             nick,
             self.makeHostFromJID(jid),
-            jid.getStripped(),
+            self.fixChannel(jid.getStripped()),
             text)
         self.sendToIRC(msg)
         
@@ -363,7 +382,7 @@ class ClientThread(Thread):
                 line = self.makeIRCACTION(line)
 
             if is_muc and not is_private:
-                msg = ':%s!%s PRIVMSG #%s :%s' % (nick, self.makeHostFromJID(jid), jid.getStripped(), line)
+                msg = ':%s!%s PRIVMSG #%s :%s' % (nick, self.makeHostFromJID(jid), self.fixChannel(jid.getStripped()), line)
             else:
                 msg = ':%s!%s PRIVMSG %s :%s' % (nick, self.makeHostFromJID(jid), self.nickname,line)
             messages.append(msg)
@@ -379,7 +398,7 @@ class ClientThread(Thread):
         @param topic: the topic
         """
         nick = self.makeNickFromJID(jid, True)
-        msg =':%s!%s TOPIC #%s :%s' % (nick, self.makeHostFromJID(jid), jid.getStripped(), topic)
+        msg =':%s!%s TOPIC #%s :%s' % (nick, self.makeHostFromJID(jid), self.fixChannel(jid.getStripped()), topic)
         self.sendToIRC(msg)
 
     def ircCommandMODEMUC(self, room_jid, args):
@@ -391,9 +410,10 @@ class ClientThread(Thread):
         @param args: arguments of the mode
         """
         nick = self.nickname
-        msg = ':%s 324 %s #%s %s' % (self.server, nick, room_jid, args)
+        channel = self.fixChannel(room_jid)
+        msg = ':%s 324 %s #%s %s' % (self.server, nick, channel, args)
         self.sendToIRC(msg)
-        msg = ':%s 329 %s #%s %s' % (self.server, nick, room_jid, '1031538353')
+        msg = ':%s 329 %s #%s %s' % (self.server, nick, channel, '1031538353')
         self.sendToIRC(msg)
 
     def ircCommandMODEMUCBANLIST(self, room_jid):
@@ -403,7 +423,7 @@ class ClientThread(Thread):
         @param room_jid: JID of the room
         """
         nick = self.nickname
-        msg = ':%s 368 %s #%s :End of Channel Ban List' % (self.server, nick, room_jid)
+        msg = ':%s 368 %s #%s :End of Channel Ban List' % (self.server, nick, self.fixChannel(room_jid))
         self.sendToIRC(msg)
 
     def ircCommandMODEMUCUSER(self, giver, taker, args):
@@ -419,7 +439,7 @@ class ClientThread(Thread):
         """
         msg = ':%s!%s MODE #%s %s %s' % (self.makeNickFromJID(giver, True),
                                          self.makeHostFromJID(giver),
-                                         taker.getStripped(),
+                                         self.fixChannel(taker.getStripped()),
                                          args,
                                          self.makeNickFromJID(taker, True))
         self.sendToIRC(msg)
@@ -492,7 +512,7 @@ class ClientThread(Thread):
             text = 'No text'
 
         msg = ':%s %s %s #%s :%s' % (
-            self.server, number, self.nickname, room, text)
+            self.server, number, self.nickname, self.fixChannel(room), text)
         self.sendToIRC(msg)
         self.ircCommandERROR(errormess)
 
@@ -504,12 +524,13 @@ class ClientThread(Thread):
         @param users: list of users
         @param room_jid: the JID of the room
         """
+        channel = self.fixChannel(room_jid)
         for user in users:
             nick = self.makeNickFromJID(user, True),
             msg = ':%s 352 %s #%s %s %s %s %s %s :0 %s' % (
                 self.server,
                 self.nickname,
-                room_jid,
+                channel,
                 user.getResource(),
                 user.getDomain(),
                 self.server,
@@ -518,7 +539,7 @@ class ClientThread(Thread):
                 self.fixNick(user.getResource()))
             self.sendToIRC(msg)
 
-        msg = ':%s 315 %s #%s :End of /WHO list.' % (self.server, self.nickname, room_jid)
+        msg = ':%s 315 %s #%s :End of /WHO list.' % (self.server, self.nickname, channel)
         self.sendToIRC(msg)
 
     def ircCommandWHOIS(self, jid):
@@ -1298,8 +1319,8 @@ class ClientThread(Thread):
             arguments = args[1]
         arguments = arguments.strip()
         MUC = arguments.startswith('#')
-        if (MUC):
-            arguments = arguments[1:]
+        if MUC:
+            arguments = self.fixChannelCommand(arguments)
             
         if self.nickname is None:
             if command == 'NICK':
@@ -1327,10 +1348,9 @@ class ClientThread(Thread):
             if len(arguments) == 2:
                 password = arguments[1]
 
-            if room.find('@') > 0:
-                self.printDebug("Joining room with full jid unsupported")
-                return
-            room = "%s@%s" % (room, self.muc_server)
+            if self.fullRoomJid and not room.endswith("@%s" % self.muc_server):
+                room = "%s@%s" % (room, self.muc_server)
+
             room = room.lower() # todo: is this valid?
             if room in self.mucs.keys(): # already in MUC
                 return
