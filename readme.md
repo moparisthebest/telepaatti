@@ -11,10 +11,15 @@ hardcore IRC users, and also allow XMPP MUC operators to easily add IRC support.
 
 Usage
 -----
+Install dependencies, python libs xmpp and daemon, on Debian/Ubuntu:
+
+    sudo apt-get install python-xmpp python-daemon
+
+Then run:
 
     ./xmpp-ircd.py --muc-server=chat.example.com --component-name=irc.example.com --component-pass=irc
 
-Will connect to 127.0.0.1:5347 as an XMPP component and serve the MUC chat.example.com as an IRC server on port 6667.
+Which will connect to 127.0.0.1:5347 as an XMPP component and serve the MUC chat.example.com as an IRC server on port 6667.
 
 prosody for example would need this component configuration for the above command:
 
