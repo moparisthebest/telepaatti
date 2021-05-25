@@ -1530,6 +1530,10 @@ class ClientThread(Thread):
             self.xmppCommandGETWHOIS(jid)
 
         elif command == 'AWAY':
+            # FIXME <https://github.com/moparisthebest/xmpp-ircd/issues/2>
+            self.printError('AWAY command ignored to avoid crashing (FIXME): %s' % data)
+            return
+
             arguments = arguments[1:] # remove the :
             show = ''
             if arguments != '':
