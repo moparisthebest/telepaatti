@@ -5,8 +5,8 @@ This is a [fork](https://github.com/moparisthebest/xmpp-ircd) of a [fork](https:
 of a [fork](https://github.com/davux/telepaatti) of [telepaatti](http://23.fi/telepaatti/), which was originally written
 as a way for one user to connect to a XMPP server from their IRC client.
 
-This particular fork aims to be ran as an IRC server connected to a single XMPP MUC as a standard XMPP component.  This
-will hopefully allow IRC server operators to migrate to hosting a real XMPP MUC with minimal headache or complaining from
+This particular fork aims to be ran as an IRC server connected to a single XMPP MUC server as a standard XMPP component.  This
+will hopefully allow IRC server operators to migrate to hosting real XMPP MUCs with minimal headache or complaining from
 hardcore IRC users, and also allow XMPP MUC operators to easily add IRC support.
 
 Usage
