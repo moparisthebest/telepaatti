@@ -32,7 +32,7 @@ import getopt, sys
 import daemon
 import logging
 import logging.handlers
-import urllib
+import urllib.request, urllib.parse, urllib.error
 import string
 import random
 
@@ -137,7 +137,7 @@ class ClientThread(Thread):
         @return: fixed nick
         """
         
-        fixednick = unicode(nick)
+        fixednick = str(nick)
         fixednick = fixednick.replace(' ', '_')
         fixednick = fixednick.replace('!', '_')
         fixednick = fixednick.replace(':', '_')
@@ -148,7 +148,7 @@ class ClientThread(Thread):
         # fix roomname
         if self.fullRoomJid:
             return channel
-        channel = unicode(channel)
+        channel = str(channel)
         return channel[0:channel.find('@')]
 
     def fixChannelCommand(self, arguments):
@@ -169,7 +169,7 @@ class ClientThread(Thread):
         @return valid Host part
         """
 
-        return "%s@%s/%s" % (urllib.quote(jid.getNode()), urllib.quote(jid.getDomain()), urllib.quote(jid.getResource()))
+        return "%s@%s/%s" % (urllib.parse.quote(jid.getNode()), urllib.parse.quote(jid.getDomain()), urllib.parse.quote(jid.getResource()))
 
         
     def makeNickFromJID(self, jid, is_muc_jid):
@@ -186,11 +186,11 @@ class ClientThread(Thread):
         if is_muc_jid and not jid.getResource():
             return self.fixNick(jid.getNode())
 
-        jid_string = u''
+        jid_string = ''
         if not is_muc_jid:
             jid_string = jid.getStripped()
         else:
-            jid_string = unicode(jid)
+            jid_string = str(jid)
 
         if not is_muc_jid:
             nick = self.fixNick(jid.getNode())
@@ -210,7 +210,7 @@ class ClientThread(Thread):
         @return: JID corresponding to nick
         """
 
-        if self.UIDtoJID.has_key(nick):
+        if nick in self.UIDtoJID:
             return self.UIDtoJID[nick]
         if nick.find('@') != -1:
             return JID(nick)
@@ -265,7 +265,7 @@ class ClientThread(Thread):
         sta = 'H'
         show = ''
         role = ''
-        if self.mucs.has_key(room_jid):
+        if room_jid in self.mucs:
             show = self.mucs[room_jid][jid]['show']
             role = self.mucs[room_jid][jid]['role']
         if show in ['away', 'xa', 'dnd']:
@@ -311,7 +311,7 @@ class ClientThread(Thread):
         lines.append(':%s JOIN :#%s'% (snick, channel))
         lines.append(':%s MODE #%s +n' % (self.server, channel))
         
-        for jid in self.mucs[room_jid].iterkeys():
+        for jid in list(self.mucs[room_jid].keys()):
             nick = snick
             if (jid.getResource() != nick):
                 nick = self.makeNickFromJID(jid, True)
@@ -548,7 +548,7 @@ class ClientThread(Thread):
         @type jid: JID
         @param jid: Jabber id of the user whose vcard is quered
         """
-        nick = self.makeNickFromJID(jid, self.mucs.has_key(jid.getStripped()))
+        nick = self.makeNickFromJID(jid, jid.getStripped() in self.mucs)
         lines = [
             ':%s 311 %s %s %s %s * : %s' % (
                 self.server,
@@ -651,7 +651,7 @@ class ClientThread(Thread):
         @param show: status
         @param status: status
         """
-        for muc in self.mucs.keys():
+        for muc in list(self.mucs.keys()):
             p=Presence(to='%s/%s' % (
                        muc,
                        self.nickname))
@@ -722,7 +722,7 @@ class ClientThread(Thread):
         # todo: looks at roster which doesn't exist, fix this
         if not jid.getResource():
             # try to find match in roster
-            rosternicks = self.mucs['roster'].keys()
+            rosternicks = list(self.mucs['roster'].keys())
             for x in rosternicks:
                 if x.getStripped() == jid.getStripped():
                     jid = x
@@ -795,8 +795,8 @@ class ClientThread(Thread):
                 # check that our rooms are still alive
                 if self.pingCounter == 5:
                     self.pingCounter = 0
-                    for muc in self.mucs.keys():
-                        if self.disconnectedMucs.has_key(muc):
+                    for muc in list(self.mucs.keys()):
+                        if muc in self.disconnectedMucs:
                             if self.disconnectedMucs[muc] < 5:
                                 self.disconnectedMucs[muc] = self.disconnectedMucs[muc] + 1
                             else:
@@ -816,7 +816,7 @@ class ClientThread(Thread):
                 self.connected = False
         if jt.connected:
             # leave all rooms
-            for room in self.mucs.keys():
+            for room in list(self.mucs.keys()):
                 self.sendToXMPP(Presence(to='%s/%s' % (room, self.nickname),
                                      typ='unavailable',
                                      status=''))
@@ -882,7 +882,7 @@ class ClientThread(Thread):
         if mess.getType() == 'groupchat':
             private = False
         
-        MUC = self.mucs.has_key(jid.getStripped())
+        MUC = jid.getStripped() in self.mucs
 
         if private:
             self.ircCommandPRIVMSG(jid, MUC, True, text, ts)
@@ -1011,7 +1011,7 @@ class ClientThread(Thread):
                 card[c.getName()] = c.getData()
 
         self.ircCommandNOTICE('** Vcard information for %s **' % iq.getFrom())
-        for key in card.keys():
+        for key in list(card.keys()):
             for line in card[key].splitlines():
                 self.ircCommandNOTICE('%s: %s' % (key, line))
 
@@ -1025,12 +1025,12 @@ class ClientThread(Thread):
         """
         jid = iq.getFrom()
         # this can mess things up, fix later
-        if self.roomPingQueue.has_key(jid):
+        if jid in self.roomPingQueue:
             del (self.roomPingQueue[jid])
         # room errors
         errornum = iq.getErrorCode()
-        if jid in self.mucs.keys():
-            if errornum == '404' and jid not in self.disconnectedMucs.keys():
+        if jid in list(self.mucs.keys()):
+            if errornum == '404' and jid not in list(self.disconnectedMucs.keys()):
                 self.ircCommandERRORMUC(404, 'MUC DISCONNECTED', jid)
                 self.ircCommandPRIVMSG(JID("%s/%s" % (jid, 'telepaatti')),
                                        True,
@@ -1065,7 +1065,7 @@ class ClientThread(Thread):
                 name = c.getName()
                 if name == 'item':
                     mucusers.append(JID(c.getAttrs()['jid']))
-            if self.mucs.has_key(jid):
+            if jid in self.mucs:
                 pass # we keep track of users else where
             self.ircCommandWHO(mucusers, jid)
             return
@@ -1091,7 +1091,7 @@ class ClientThread(Thread):
         """
         roomname = iq.getFrom()
         # this can mess things up, fix
-        if self.roomPingQueue.has_key(roomname):
+        if roomname in self.roomPingQueue:
             del (self.roomPingQueue[roomname])
             return
 
@@ -1106,7 +1106,7 @@ class ClientThread(Thread):
                 name = c.getName()
                 if name == 'identity':
                     atrs = c.getAttrs()
-                    if atrs.has_key('type') and atrs.has_key('category'):
+                    if 'type' in atrs and 'category' in atrs:
                         if atrs['type'] == 'text' and \
                                 atrs['category'] == 'conference':
                             MUC = True
@@ -1178,8 +1178,8 @@ class ClientThread(Thread):
         room = JID(pres.getFrom().getStripped())
 
         # for affiliation and role changes
-        if self.mucs.has_key(room) and \
-                nick in self.mucs[room].keys():
+        if room in self.mucs and \
+                nick in list(self.mucs[room].keys()):
             xrole = self.mucs[room][nick]['role']
             xaffiliation = self.mucs[room][nick]['affiliation']
             if role != xrole: # role has changed
@@ -1204,14 +1204,14 @@ class ClientThread(Thread):
             self.nickChangeInMucs[room] = {'checked': True,
                                            'changed': True}
             # check if we have checked all MUCs
-            for muc in self.nickChangeInMucs.keys():
+            for muc in list(self.nickChangeInMucs.keys()):
                 if not self.nickChangeInMucs[muc]['checked']:
                     return # no need to go any further
             # check if it changed in all MUCs
-            for muc in self.nickChangeInMucs.keys():
+            for muc in list(self.nickChangeInMucs.keys()):
                 if not self.nickChangeInMucs[muc]['changed']:
                     changedMucs = list()
-                    for gei in self.nickChangeInMucs.keys():
+                    for gei in list(self.nickChangeInMucs.keys()):
                         if self.nickChangeInMucs[gei]['changed']:
                             changedMucs.append(gei)
                     self.nickChangeInMucs = {}
@@ -1260,21 +1260,21 @@ class ClientThread(Thread):
             else:
                 self.ircCommandERROR('MUC error not yet implemented (%d %s)' % (erc, er))
         else:
-            joining = self.joinQueue.has_key(room)
-            inroom = self.mucs.has_key(room)
+            joining = room in self.joinQueue
+            inroom = room in self.mucs
             if ptype == 'unavailable':
                 self.printDebug('unavailable')
                 if nick.getResource() == self.nickname:
                     self.printDebug('our self')
                     if joining:
                         del (self.joinQueue[room])
-                    elif self.nickChangeInMucs.has_key(room):
+                    elif room in self.nickChangeInMucs:
                         # between nick change
                         self.printDebug('we are between nick change')
                         return
                     elif inroom:
                         self.ircCommandPART(nick, ' left')
-                        if nick in self.mucs[room].keys():
+                        if nick in list(self.mucs[room].keys()):
                             del (self.mucs[room])
                     else:
                         line = "%s is doing something" % nick
@@ -1317,18 +1317,18 @@ class ClientThread(Thread):
                     pass
                 else: # someone else
                     if joining:
-                        if nick not in self.joinQueue[room]['users'].keys():
+                        if nick not in list(self.joinQueue[room]['users'].keys()):
                             self.joinQueue[room]['users'][nick] = { 'role': role,
                                                                     'affiliation': affiliation,
                                                                     'show' : show,
                                                                     'status': status}
                     elif inroom:
-                        new_user = nick not in self.mucs[room].keys()
+                        new_user = nick not in list(self.mucs[room].keys())
                         self.mucs[room][nick] = { 'role': role,
                                       'affiliation': affiliation,
                                       'show' : show,
                                       'status': status }
-                        if nick in self.changingNick.keys():
+                        if nick in list(self.changingNick.keys()):
                             self.ircCommandNICK(self.changingNick[nick], nick)
                         elif new_user:
                             self.ircCommandJOIN(nick)
@@ -1344,14 +1344,14 @@ class ClientThread(Thread):
         self.printDebug('got ircline: %s' % data)
         # utf-8 test
         try:
-            unicode(data, 'utf-8')
+            str(data, 'utf-8')
         except exceptions.UnicodeDecodeError:
             self.printError('Unicode decode error. Your IRC client is (probably) not writing utf-8')
             self.ircCommandERROR('Input form IRC client was not in utf-8. Turn utf-8 support on from your IRC client or input only pure ascii', -1)
             return
 
         args = data.split(' ', 1)
-        arguments = u''
+        arguments = ''
         command = args[0].upper()
         if len(args) == 2:
             arguments = args[1]
@@ -1382,7 +1382,7 @@ class ClientThread(Thread):
             #We won't be able to join rooms with a space in their name, but it's not as bad as being unable to join rooms with a password
             arguments = arguments.split(' ', 1)
             room = arguments[0]
-            password = u''
+            password = ''
             if len(arguments) == 2:
                 password = arguments[1]
 
@@ -1390,7 +1390,7 @@ class ClientThread(Thread):
                 room = "%s@%s" % (room, self.muc_server)
 
             room = room.lower() # todo: is this valid?
-            if room in self.mucs.keys(): # already in MUC
+            if room in list(self.mucs.keys()): # already in MUC
                 return
             self.printDebug("Joining room: %s" % JID(room))
             self.joinQueue[JID(room)] = {'messages': list(),
@@ -1413,7 +1413,7 @@ class ClientThread(Thread):
                 room = JID(room.strip())
             else:
                 room = JID(arguments.strip())
-            if room not in self.mucs.keys(): # not in room
+            if room not in list(self.mucs.keys()): # not in room
                 return
             self.sendToXMPP(Presence(to='%s/%s' % (room, self.nickname),
                                      typ='unavailable',
@@ -1464,7 +1464,7 @@ class ClientThread(Thread):
             for muc in self.getMucs():
                 self.nickChangeInMucs[muc] = {'checked': False,
                                 'changed': False}
-            for muc in self.nickChangeInMucs.keys():
+            for muc in list(self.nickChangeInMucs.keys()):
                 self.xmppCommandMUCPRESENCE(muc, self.newnick)
 
         elif command == 'TOPIC':
@@ -1475,7 +1475,7 @@ class ClientThread(Thread):
                 text = arguments[x+2:]
                 text = text.strip()
                 jid = JID(arguments[:x].strip())
-            if jid not in self.mucs.keys():
+            if jid not in list(self.mucs.keys()):
                 self.ircCommandERROR('', 403)
                 return
 
@@ -1559,18 +1559,18 @@ class ClientThread(Thread):
 
 def usage():
     """Usage function for showing commandline options """
-    print "Usage: xmpp-ircd [OPTION]..."
-    print "OPTIONS"
-    print "-h, --help\t help"
-    print "-p, --port\t port to listen for IRC connections on"
-    print "-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands"
-    print "-s, --server\t Jabber/XMPP server to which the component connection should be made"
-    print "-P, --server-port\t Port to which the component connection should be made"
-    print "-c, --component-name\t Name of component"
-    print "-C, --component-pass\t Component password"
-    print "    --ssl\t SSL certificate. Enables ssl when provided"
-    print "    --dh\t Diffie Hellman parameter file for SSL."
-    print "    --log\t log file"
+    print("Usage: xmpp-ircd [OPTION]...")
+    print("OPTIONS")
+    print("-h, --help\t help")
+    print("-p, --port\t port to listen for IRC connections on")
+    print("-m, --muc-server\t Address of the MUC service. Used for autocompletion of JOIN commands")
+    print("-s, --server\t Jabber/XMPP server to which the component connection should be made")
+    print("-P, --server-port\t Port to which the component connection should be made")
+    print("-c, --component-name\t Name of component")
+    print("-C, --component-pass\t Component password")
+    print("    --ssl\t SSL certificate. Enables ssl when provided")
+    print("    --dh\t Diffie Hellman parameter file for SSL.")
+    print("    --log\t log file")
 
 def main():
     port = 6667
@@ -1601,13 +1601,13 @@ def main():
             try:
                 port = int(a)
             except:
-                print "port should be an integer"
+                print("port should be an integer")
                 sys.exit()
         if o in ("-P", "--server-port"):
             try:
                 server_port = int(a)
             except:
-                print "server-port should be an integer"
+                print("server-port should be an integer")
                 sys.exit()
         if o in ("-s", "--server"):
             server = a
