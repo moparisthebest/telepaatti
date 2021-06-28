@@ -36,7 +36,7 @@ import urllib
 import string
 import random
 
-STATUSSTATES = ['AVAILABLE','CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
+STATUSSTATES = ['AVAILABLE', 'CHAT', 'AWAY', 'XA', 'DND', 'INVISIBLE']
 XMPPIRCDVERSION = 3.0
 
 class JabberThread(Thread):
@@ -63,7 +63,7 @@ class JabberThread(Thread):
 
 class ClientThread(Thread):
     """ ClientThread class for handling IRC and Jabber connections."""
-    def __init__(self,socket, port, server, muc_server, component):
+    def __init__(self, socket, port, server, muc_server, component):
         """Constructor for ClientThread class
 
         @type socket: socket
@@ -268,7 +268,7 @@ class ClientThread(Thread):
         if self.mucs.has_key(room_jid):
             show = self.mucs[room_jid][jid]['show']
             role = self.mucs[room_jid][jid]['role']
-        if show in ['away','xa', 'dnd']:
+        if show in ['away', 'xa', 'dnd']:
             sta = 'G'
         if role == 'moderator':
             sta = '%s@' % sta
@@ -384,7 +384,7 @@ class ClientThread(Thread):
             if is_muc and not is_private:
                 msg = ':%s!%s PRIVMSG #%s :%s' % (nick, self.makeHostFromJID(jid), self.fixChannel(jid.getStripped()), line)
             else:
-                msg = ':%s!%s PRIVMSG %s :%s' % (nick, self.makeHostFromJID(jid), self.nickname,line)
+                msg = ':%s!%s PRIVMSG %s :%s' % (nick, self.makeHostFromJID(jid), self.nickname, line)
             messages.append(msg)
         for msg in messages:
             self.sendToIRC(msg)
@@ -860,7 +860,7 @@ class ClientThread(Thread):
         @param mess: XMPP Message
         """
         if mess.getType() == 'error':
-            self.messageHandlerError(sess,mess)
+            self.messageHandlerError(sess, mess)
             return
 
         jid = mess.getFrom()
@@ -868,12 +868,12 @@ class ClientThread(Thread):
         topic = mess.getSubject()
         
         ts = ''
-        if mess.getTag('x',namespace=NS_DELAY):
+        if mess.getTag('x', namespace=NS_DELAY):
             ts=mess.getTimestamp()
             if not ts:
                 ts=mess.setTimestamp()
                 ts=mess.getTimestamp()
-            ts = time.strptime(ts,'%Y%m%dT%H:%M:%S')
+            ts = time.strptime(ts, '%Y%m%dT%H:%M:%S')
             ts = datetime.datetime(*ts[:-3])
         if not text and not topic:
             return
@@ -936,7 +936,7 @@ class ClientThread(Thread):
             self.printDebug('IQ HANDLER FOR THIS NAMESPACE NOT IMPLEMENTED YET')
 
 
-    def iqHandlerLastError(self,con, iq):
+    def iqHandlerLastError(self, con, iq):
         """Handle incoming XMPP with type Iq and last activity error
 
         @type con: Connection
@@ -959,7 +959,7 @@ class ClientThread(Thread):
         self.ircCommandNOTICE('** Last active information for %s **' % iq.getFrom())
         self.ircCommandNOTICE('Idle %s second**' % seconds)
 
-    def iqHandlerVersionError(self,con, iq):
+    def iqHandlerVersionError(self, con, iq):
         """Handle incoming XMPP with type Iq and version error
 
         @type con: Connection
@@ -982,7 +982,7 @@ class ClientThread(Thread):
         for c in ch:
             self.ircCommandNOTICE('%s: %s' % (c.getName(), c.getData()))
 
-    def iqHandlerVcardError(self,con, iq):
+    def iqHandlerVcardError(self, con, iq):
         """Handle incoming XMPP with type Iq and vcard error
 
         @type con: Connection
@@ -1015,7 +1015,7 @@ class ClientThread(Thread):
             for line in card[key].splitlines():
                 self.ircCommandNOTICE('%s: %s' % (key, line))
 
-    def iqHandlerError(self, con , iq):
+    def iqHandlerError(self, con, iq):
         """Handle incoming XMPP with type Iq and error
 
         @type con: Connection
@@ -1347,7 +1347,7 @@ class ClientThread(Thread):
             unicode(data, 'utf-8')
         except exceptions.UnicodeDecodeError:
             self.printError('Unicode decode error. Your IRC client is (probably) not writing utf-8')
-            self.ircCommandERROR('Input form IRC client was not in utf-8. Turn utf-8 support on from your IRC client or input only pure ascii',-1)
+            self.ircCommandERROR('Input form IRC client was not in utf-8. Turn utf-8 support on from your IRC client or input only pure ascii', -1)
             return
 
         args = data.split(' ', 1)
@@ -1398,8 +1398,8 @@ class ClientThread(Thread):
             p=Presence(to='%s/%s' % (
                     room,
                     self.nickname))
-            p.setTag('x',namespace=NS_MUC).setTagData('password', password)
-            p.getTag('x').addChild('history',{'maxchars':'10000','maxstanzas':'100'})
+            p.setTag('x', namespace=NS_MUC).setTagData('password', password)
+            p.getTag('x').addChild('history', {'maxchars':'10000','maxstanzas':'100'})
             self.sendToXMPP(p)
 
         elif command == 'PART':
@@ -1538,7 +1538,7 @@ class ClientThread(Thread):
             show = ''
             if arguments != '':
                 show = 'away'
-            args = arguments.split(' ',1)
+            args = arguments.split(' ', 1)
             status = arguments
             if args[0].upper() in STATUSSTATES:
                 show = args[0]
@@ -1585,7 +1585,7 @@ def main():
     log_file = '/var/log/xmpp-ircd'
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "s:P:m:p:h:d:c:C:", ["server=","server-port=","muc-server=","port=","help","daemonize","ssl=","dh=","component-name=","component-pass="])
+        opts, args = getopt.getopt(sys.argv[1:], "s:P:m:p:h:d:c:C:", ["server=", "server-port=", "muc-server=", "port=", "help", "daemonize", "ssl=", "dh=", "component-name=", "component-pass="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
