@@ -28,8 +28,8 @@ prosody for example would need this component configuration for the above comman
     Component "irc.example.com"
         component_secret = "irc"
 
-Then, whether an XMPP user connects to [xmpp:example@chat.example.com?join](xmpp:example@chat.example.com?join) or an
-IRC user to [irc://irc.example.com:6667/example](irc://irc.example.com:6667/example) they will both be in the same channel,
+Then, whether an XMPP user connects to xmpp:example@chat.example.com?join or an
+IRC user to irc://irc.example.com:6667/example they will both be in the same channel,
 hopefully unable to tell the other is using a completely different protocol.
 
 Development
