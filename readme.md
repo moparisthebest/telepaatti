@@ -35,6 +35,9 @@ hopefully unable to tell the other is using a completely different protocol.
 Development
 -----------
 
+Online discussions:
+  * XMPP-IRCd users and developers can be found hanging out in [the XMPP-IRCd chatroom](xmpp:xmpp-ircd@chatrooms.hackerposse.com?join). Come chat with us!
+
 Useful documentation:
   * [XEP-0045: Multi-User Chat](https://xmpp.org/extensions/xep-0045.html)
   * [RFC-1459: Internet Relay Chat Protocol](https://tools.ietf.org/html/rfc1459)
